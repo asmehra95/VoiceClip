@@ -2,7 +2,9 @@
 
 **Talk. It types.** One key, zero setup headaches.
 
-VoiceClip turns your voice into text on your Mac — locally, privately, instantly. Hold a key, say what you're thinking, let go. Your words appear wherever your cursor is. No accounts, no cloud, no monthly fees. Just your voice and your Mac's GPU doing the work.
+A free, open-source alternative to [Whisper Memos](https://whispermemos.com/) and similar cloud transcription tools — except VoiceClip runs entirely on your Mac. No subscription, no cloud, no data leaving your laptop. Just your voice and your Apple Silicon GPU.
+
+VoiceClip turns your voice into text anywhere on your Mac. Hold a key, say what you're thinking, let go. Your words appear wherever your cursor is.
 
 ```bash
 bash install.sh && voiceclip
@@ -29,12 +31,13 @@ No copy-paste. No switching apps. No waiting.
 - **Works everywhere** — any app, any text field, system-wide hotkey
 - **Runs 100% locally** — your voice never leaves your Mac. Period.
 - **Apple Silicon native** — uses your M-chip GPU for fast transcription
+- **Optimized for low latency** — model preloaded at startup, zero-delay mic capture, instant silence detection. From key release to text pasted in 2-3 seconds
 - **No config needed** — sensible defaults, works out of the box
 
 ## Install
 
 ```bash
-git clone <this-repo> && cd voiceclip
+git clone https://github.com/asmehra95/VoiceClip.git && cd voiceclip
 bash install.sh
 ```
 
