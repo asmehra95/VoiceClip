@@ -64,7 +64,7 @@ def transcribe(audio_path):
             path_or_hf_repo=_REPO,
             language="en" if ENGLISH_ONLY else None,
             no_speech_threshold=0.6,
-            condition_on_previous_text=False,
+            condition_on_previous_text=True,
         )
 
         segments = result.get("segments", [])
