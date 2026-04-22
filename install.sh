@@ -70,7 +70,9 @@ fi
 
 # Copy project files (works whether run from repo or standalone)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cp -r "$SCRIPT_DIR/voiceclip" "$INSTALL_DIR/"
+# Remove old source files before copying to avoid nested directory issues
+rm -rf "$INSTALL_DIR/voiceclip"
+cp -r "$SCRIPT_DIR/voiceclip" "$INSTALL_DIR/voiceclip"
 cp "$SCRIPT_DIR/transcribe.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/"
 
@@ -82,8 +84,8 @@ fi
 
 # Install dependencies
 echo "📦 Installing dependencies (this may take a few minutes)..."
-"$VENV_DIR/bin/pip" install --quiet --upgrade pip
-"$VENV_DIR/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+"$VENV_DIR/bin/pip" install --upgrade pip
+"$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
 # Create launcher script
 cat > "$INSTALL_DIR/voiceclip" << 'LAUNCHER'
