@@ -42,9 +42,9 @@ if [[ "$PY_MAJOR" -lt 3 ]] || [[ "$PY_MAJOR" -eq 3 && "$PY_MINOR" -lt 10 ]]; the
 fi
 echo "✅ Python $PY_VERSION"
 
-# ffmpeg
+# ffmpeg (needed by mlx-whisper for audio decoding)
 if ! command -v ffmpeg &>/dev/null; then
-    echo "📦 Installing ffmpeg..."
+    echo "📦 Installing ffmpeg (required by mlx-whisper)..."
     if command -v brew &>/dev/null; then
         brew install ffmpeg
     else
