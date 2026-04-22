@@ -87,19 +87,19 @@ echo "📦 Installing dependencies (this may take a few minutes)..."
 "$VENV_DIR/bin/pip" install --upgrade pip
 "$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
-# Create launcher script
-cat > "$INSTALL_DIR/voiceclip" << 'LAUNCHER'
+# Create launcher script (named 'run' to avoid conflict with voiceclip/ directory)
+cat > "$INSTALL_DIR/run" << 'LAUNCHER'
 #!/bin/bash
 INSTALL_DIR="$HOME/.voiceclip"
 source "$INSTALL_DIR/.venv/bin/activate"
 python "$INSTALL_DIR/transcribe.py" "$@"
 LAUNCHER
-chmod +x "$INSTALL_DIR/voiceclip"
+chmod +x "$INSTALL_DIR/run"
 
-# Add to PATH via symlink
+# Add to PATH via symlink (user-facing command is still 'voiceclip')
 LINK_DIR="$HOME/.local/bin"
 mkdir -p "$LINK_DIR"
-ln -sf "$INSTALL_DIR/voiceclip" "$LINK_DIR/voiceclip"
+ln -sf "$INSTALL_DIR/run" "$LINK_DIR/voiceclip"
 
 echo ""
 echo "=================================================="
@@ -107,7 +107,7 @@ echo "  ✅ VoiceClip installed!"
 echo "=================================================="
 echo ""
 echo "  To run:  voiceclip"
-echo "           (or: $INSTALL_DIR/voiceclip)"
+echo "           (or: $INSTALL_DIR/run)"
 echo ""
 echo "  ⚠️  First time setup:"
 echo "  1. Add ~/.local/bin to your PATH if not already:"
