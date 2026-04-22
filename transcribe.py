@@ -146,7 +146,11 @@ def start_recording():
             _tmp_path = None
             _safe_unlink(tmp_path)  # Fix #2: clean up leaked temp file
 
-    _rec_ready.set()  # Fix #1: signal that recording setup is done
+    # Small warmup for ffmpeg to initialize AVFoundation.
+    # Most users naturally pause ~200-400ms between pressing the key
+    # and starting to speak, which covers this.
+    time.sleep(0.15)
+    _rec_ready.set()
 
 
 def stop_recording():
@@ -332,7 +336,7 @@ def _on_press(key):
         _hotkey_active = True
         _press_time = time.time()
         print("\n🔴 Recording... (release Right ⌥ to stop)")
-        beep("Tink")
+        beep("Tink")  # Immediate feedback
         threading.Thread(target=start_recording, daemon=True).start()
 
 
