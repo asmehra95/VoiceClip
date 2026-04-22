@@ -2,7 +2,7 @@
 
 **Talk. It types.** One key, zero setup headaches.
 
-A free, open-source alternative to WhisperSync and similar cloud transcription tools — except VoiceClip runs entirely on your Mac. No subscription, no cloud, no data leaving your laptop. Just your voice and your Apple Silicon GPU.
+A free, open-source alternative to WhisperFlow and similar cloud transcription tools — except VoiceClip runs entirely on your Mac. No subscription, no cloud, no data leaving your laptop. Just your voice and your Apple Silicon GPU.
 
 VoiceClip turns your voice into text anywhere on your Mac. Hold a key, say what you're thinking, let go. Your words appear wherever your cursor is.
 
@@ -14,7 +14,7 @@ That's it. You're done.
 
 ---
 
-## 30-second demo
+## How it works
 
 1. Run `voiceclip`
 2. Open Slack, an email, a doc — anywhere you type
@@ -37,7 +37,7 @@ No copy-paste. No switching apps. No waiting.
 ## Install
 
 ```bash
-git clone https://github.com/asmehra95/VoiceClip.git && cd voiceclip
+git clone ssh://git.amazon.com/pkg/VoiceClip && cd voiceclip
 bash install.sh
 ```
 
