@@ -1,273 +1,372 @@
 """
 VoiceClip — Local Voice-to-Clipboard for macOS
-Record from mic or upload a file, transcribe with mlx-whisper (Apple Silicon GPU),
-copy to clipboard.
+
+Hold the Right Option (⌥) key to record from your mic.
+Release to transcribe with mlx-whisper and copy the text to your clipboard.
 
 Usage:
-    pip install mlx-whisper gradio sounddevice soundfile
+    pip install mlx-whisper pynput
     python transcribe.py
-    # Opens browser at http://localhost:7860
 
-Requires:
+Requirements:
     - Apple Silicon Mac (M1/M2/M3/M4)
     - ffmpeg (brew install ffmpeg)
+    - Accessibility permissions for your terminal app
+      (System Settings → Privacy & Security → Accessibility)
+
+Configuration (via environment variables):
+    VOICECLIP_MODEL  — Whisper model to use (default: large-v3-turbo)
+                       Options: tiny, base, small, medium, large-v3-turbo, large-v3
 """
 
-import sys
 import os
-import time
+import shutil
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 
-# Check dependencies early
+# ---------------------------------------------------------------------------
+# Dependency checks — fail fast with helpful messages
+# ---------------------------------------------------------------------------
+
 _missing = []
+
 try:
     import mlx_whisper
 except ImportError:
     _missing.append("mlx-whisper")
+
 try:
-    import gradio as gr
+    from pynput import keyboard
 except ImportError:
-    _missing.append("gradio")
-try:
-    import sounddevice as sd
-except ImportError:
-    _missing.append("sounddevice")
-try:
-    import soundfile as sf
-except ImportError:
-    _missing.append("soundfile")
+    _missing.append("pynput")
 
 if _missing:
-    print(f"Missing packages: {', '.join(_missing)}")
+    print(f"Missing: {', '.join(_missing)}")
     print(f"Run: pip install {' '.join(_missing)}")
     sys.exit(1)
 
-import numpy as np
+if not shutil.which("ffmpeg"):
+    print("ffmpeg not found. Install with: brew install ffmpeg")
+    sys.exit(1)
 
-# Model name -> HuggingFace repo
+# ---------------------------------------------------------------------------
+# Configuration — edit these or set env vars to customize
+# ---------------------------------------------------------------------------
+
 MODELS = {
-    "tiny.en": "mlx-community/whisper-tiny.en-mlx",
-    "base.en": "mlx-community/whisper-base.en-mlx",
-    "small.en": "mlx-community/whisper-small.en-mlx",
-    "medium.en": "mlx-community/whisper-medium.en-mlx",
-    "large-v3": "mlx-community/whisper-large-v3-mlx",
+    "tiny.en":        "mlx-community/whisper-tiny.en-mlx",
+    "base.en":        "mlx-community/whisper-base.en-mlx",
+    "small.en":       "mlx-community/whisper-small.en-mlx",
+    "medium.en":      "mlx-community/whisper-medium.en-mlx",
     "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
-    "tiny": "mlx-community/whisper-tiny-mlx",
-    "base": "mlx-community/whisper-base-mlx",
-    "small": "mlx-community/whisper-small-mlx",
-    "medium": "mlx-community/whisper-medium-mlx",
+    "large-v3":       "mlx-community/whisper-large-v3-mlx",
 }
 
-SAMPLE_RATE = 16000  # Whisper expects 16kHz
+MODEL = os.environ.get("VOICECLIP_MODEL", "large-v3-turbo")
+ENGLISH_ONLY = True
+MIN_HOLD_SECONDS = 0.3   # Taps shorter than this are ignored
+MIN_FILE_BYTES = 1000    # WAV files smaller than this are treated as empty
 
-# Recording state
+# ---------------------------------------------------------------------------
+# Recording — uses ffmpeg + AVFoundation to capture from the default mic.
+# We use ffmpeg instead of sounddevice because pynput's cffi callbacks
+# conflict with sounddevice's cffi callbacks, causing segfaults on macOS.
+# ---------------------------------------------------------------------------
+
+_ffmpeg_proc = None
+_tmp_path = None
 _recording = False
-_audio_frames = []
-_stream = None
+_rec_lock = threading.Lock()
 
 
-def get_input_devices():
-    """List available input devices, system default first."""
-    devices = sd.query_devices()
-    default_input = sd.default.device[0]
-    input_devices = {}
-
-    for i, d in enumerate(devices):
-        if d["max_input_channels"] > 0:
-            label = d["name"]
-            if i == default_input:
-                label = f"⭐ {label} (System Default)"
-            input_devices[label] = i
-
-    return input_devices
-
-
-def start_recording(mic_choice):
-    """Start recording from the selected mic."""
-    global _recording, _audio_frames, _stream
-
-    if _recording:
-        return "⚠️ Already recording"
-
-    devices = get_input_devices()
-    device_id = devices.get(mic_choice)
-
-    _recording = True
-    _audio_frames = []
-
-    def callback(indata, frames, time_info, status):
-        if _recording:
-            _audio_frames.append(indata.copy())
-
-    _stream = sd.InputStream(
-        samplerate=SAMPLE_RATE,
-        channels=1,
-        dtype="float32",
-        device=device_id,
-        callback=callback,
+def list_mics():
+    """Print available AVFoundation audio input devices."""
+    result = subprocess.run(
+        ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+        capture_output=True, text=True,
     )
-    _stream.start()
+    audio_section = False
+    for line in result.stderr.split("\n"):
+        if "AVFoundation audio devices:" in line:
+            audio_section = True
+            continue
+        if audio_section and "] [" in line:
+            parts = line.split("] ")
+            if len(parts) >= 3:
+                print(f"    [{parts[1].strip('[]')}] {parts[2].strip()}")
 
-    return "🔴 Recording... click Stop when done"
+
+def start_recording():
+    """Start recording from the default mic via ffmpeg."""
+    global _ffmpeg_proc, _tmp_path, _recording
+
+    with _rec_lock:
+        if _recording:
+            return
+        _recording = True
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        _tmp_path = tmp.name
+        tmp.close()
+
+        try:
+            _ffmpeg_proc = subprocess.Popen(
+                [
+                    "ffmpeg", "-y",
+                    "-f", "avfoundation", "-i", ":default",
+                    "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le",
+                    _tmp_path,
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as e:
+            print(f"  ❌ Failed to start ffmpeg: {e}")
+            _recording = False
+            _tmp_path = None
 
 
 def stop_recording():
-    """Stop recording and save to a temp WAV file."""
-    global _recording, _stream
+    """Stop ffmpeg and return the path to the recorded WAV, or None."""
+    global _ffmpeg_proc, _recording, _tmp_path
 
-    _recording = False
-    if _stream:
-        _stream.stop()
-        _stream.close()
-        _stream = None
+    # Grab references under lock, then release so we don't hold it during wait()
+    with _rec_lock:
+        _recording = False
+        proc, path = _ffmpeg_proc, _tmp_path
+        _ffmpeg_proc = None
+        _tmp_path = None
 
-    if not _audio_frames:
-        return None, "⚠️ No audio recorded"
+    if proc:
+        try:
+            proc.stdin.write(b"q")
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            proc.terminate()
 
-    audio_data = np.concatenate(_audio_frames, axis=0).flatten()
-    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    sf.write(tmp.name, audio_data, SAMPLE_RATE)
-    tmp.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
-    duration = len(audio_data) / SAMPLE_RATE
-    return tmp.name, f"⏹️ Stopped — {duration:.1f}s recorded"
+    time.sleep(0.1)  # Let the filesystem flush
+
+    if path and os.path.exists(path):
+        size = os.path.getsize(path)
+        if size < MIN_FILE_BYTES:
+            print(f"  ⚠️  Recording too small ({size} bytes), discarding")
+            _safe_unlink(path)
+            return None
+        print(f"  📁 Recorded {size / 1024:.1f} KB")
+        return path
+
+    return None
 
 
-def transcribe(audio_path, model_size, english_only):
-    """Transcribe audio using mlx-whisper on Apple Silicon GPU."""
-    if audio_path is None:
-        return "", "⚠️ No audio to transcribe"
+# ---------------------------------------------------------------------------
+# Transcription — mlx-whisper runs on the Apple Silicon GPU via Metal
+# ---------------------------------------------------------------------------
+
+def transcribe_audio(audio_path):
+    """Transcribe a WAV file and return the text, or None. Deletes the file after."""
+    if not audio_path:
+        return None
 
     try:
-        start_time = time.time()
-
-        if english_only and model_size in ("tiny", "base", "small", "medium"):
-            model_key = f"{model_size}.en"
+        # Pick the .en variant for English-only mode (faster, more accurate)
+        if ENGLISH_ONLY and MODEL in ("tiny", "base", "small", "medium"):
+            model_key = f"{MODEL}.en"
         else:
-            model_key = model_size
+            model_key = MODEL
 
-        repo = MODELS.get(model_key, MODELS["base.en"])
+        repo = MODELS.get(model_key, MODELS.get(MODEL, MODELS["large-v3-turbo"]))
 
-        kwargs = {"path_or_hf_repo": repo}
-        if english_only:
-            kwargs["language"] = "en"
+        result = mlx_whisper.transcribe(
+            audio_path,
+            path_or_hf_repo=repo,
+            language="en" if ENGLISH_ONLY else None,
+            no_speech_threshold=0.6,
+            condition_on_previous_text=False,
+        )
 
-        result = mlx_whisper.transcribe(audio_path, **kwargs)
-
+        # Filter out segments Whisper hallucinated on silence
         segments = result.get("segments", [])
-        if not segments:
-            return "", "No speech detected"
+        real = [s for s in segments if s.get("no_speech_prob", 0) < 0.7]
 
-        plain = " ".join(seg["text"].strip() for seg in segments)
-        elapsed = time.time() - start_time
+        if not real:
+            return None
 
-        # Clean up temp file if it was from recording
-        if audio_path.startswith(tempfile.gettempdir()):
-            os.unlink(audio_path)
-
-        return plain, f"✅ {len(plain)} chars in {elapsed:.1f}s ({model_key} on Metal GPU)"
+        text = " ".join(s["text"].strip() for s in real).strip()
+        return text or None
 
     except Exception as e:
-        return "", f"❌ Error: {e}"
+        print(f"  ❌ Transcription error: {e}")
+        return None
+    finally:
+        _safe_unlink(audio_path)
 
 
-def build_ui():
-    devices = get_input_devices()
-    device_names = list(devices.keys())
-    # Put system default first
-    default_name = next((n for n in device_names if "System Default" in n), device_names[0])
+# ---------------------------------------------------------------------------
+# macOS utilities — clipboard and notifications
+# ---------------------------------------------------------------------------
 
-    with gr.Blocks(title="VoiceClip") as app:
-        gr.Markdown("## 🎙️ VoiceClip")
-        gr.Markdown("Record or upload audio → transcribe on Apple Silicon GPU → copy")
+def copy_to_clipboard(text):
+    """Copy text to the macOS clipboard via pbcopy."""
+    try:
+        proc = subprocess.Popen(
+            ["pbcopy"], stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        proc.communicate(input=text.encode("utf-8"))
+    except Exception as e:
+        print(f"  ❌ Clipboard error: {e}")
 
-        # Hidden state to hold the recorded audio path
-        recorded_path = gr.State(value=None)
 
-        # --- Mic Recording Section ---
-        gr.Markdown("### Record from Mic")
+def paste_from_clipboard():
+    """Simulate Cmd+V to paste into the active app."""
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to keystroke "v" using command down'],
+            capture_output=True, timeout=5,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
 
-        mic_dropdown = gr.Dropdown(
-            choices=device_names,
-            value=default_name,
-            label="Microphone",
+
+def notify(title, message):
+    """Show a macOS notification via osascript."""
+    safe_msg = message.replace("\\", "\\\\").replace('"', '\\"')[:100]
+    safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             f'display notification "{safe_msg}" with title "{safe_title}"'],
+            capture_output=True, timeout=5,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def _safe_unlink(path):
+    """Delete a file if it exists, silently ignoring errors."""
+    try:
+        if path and os.path.exists(path):
+            os.unlink(path)
+    except OSError:
+        pass
+
+
+def beep(sound="Tink"):
+    """Play a macOS system sound. Runs async so it doesn't block."""
+    # Available sounds: Tink, Pop, Blow, Bottle, Frog, Funk, Glass, Hero,
+    # Morse, Ping, Purr, Sosumi, Submarine, Basso
+    path = f"/System/Library/Sounds/{sound}.aiff"
+    if os.path.exists(path):
+        subprocess.Popen(
+            ["afplay", path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
-        with gr.Row():
-            record_btn = gr.Button("⏺ Start Recording", variant="primary")
-            stop_btn = gr.Button("⏹ Stop Recording", variant="stop")
 
-        rec_status = gr.Markdown("")
+# ---------------------------------------------------------------------------
+# Hotkey — hold Right Option (⌥) to record, release to transcribe & copy
+# ---------------------------------------------------------------------------
 
-        record_btn.click(
-            fn=start_recording,
-            inputs=[mic_dropdown],
-            outputs=[rec_status],
-        )
-        stop_btn.click(
-            fn=stop_recording,
-            outputs=[recorded_path, rec_status],
-        )
+_hotkey_active = False
+_press_time = 0.0
 
-        # --- Upload Section ---
-        gr.Markdown("### Or Upload a File")
-        audio_upload = gr.Audio(
-            label="Audio File",
-            type="filepath",
-            sources=["upload"],
-        )
 
-        # --- Transcription Settings ---
-        gr.Markdown("### Transcribe")
-        with gr.Row():
-            model_dropdown = gr.Dropdown(
-                choices=["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"],
-                value="large-v3-turbo",
-                label="Model",
-                info="turbo ⭐ = best speed/quality, large-v3 = most accurate",
-            )
-            english_only = gr.Checkbox(
-                label="English only",
-                value=True,
-                info="Faster & more accurate for English",
-            )
+def _on_press(key):
+    global _hotkey_active, _press_time
 
-        transcribe_rec_btn = gr.Button("🎙️ Transcribe Recording", variant="primary", size="lg")
-        transcribe_file_btn = gr.Button("📁 Transcribe Uploaded File", size="lg")
+    if key == keyboard.Key.alt_r and not _hotkey_active:
+        _hotkey_active = True
+        _press_time = time.time()
+        print("\n🔴 Recording... (release Right ⌥ to stop)")
+        beep("Tink")  # Short beep: recording started
+        threading.Thread(target=start_recording, daemon=True).start()
 
-        status = gr.Markdown("")
-        plain_output = gr.Textbox(label="📋 Transcription", lines=6)
 
-        copy_btn = gr.Button("📋 Copy to Clipboard")
-        copy_btn.click(
-            fn=None,
-            inputs=[plain_output],
-            js="(text) => { navigator.clipboard.writeText(text); }",
-        )
+def _on_release(key):
+    global _hotkey_active
 
-        # Transcribe recording
-        transcribe_rec_btn.click(
-            fn=transcribe,
-            inputs=[recorded_path, model_dropdown, english_only],
-            outputs=[plain_output, status],
-        )
+    if key != keyboard.Key.alt_r or not _hotkey_active:
+        return
 
-        # Transcribe uploaded file
-        transcribe_file_btn.click(
-            fn=transcribe,
-            inputs=[audio_upload, model_dropdown, english_only],
-            outputs=[plain_output, status],
-        )
+    _hotkey_active = False
+    hold_time = time.time() - _press_time
 
-    return app
+    # Ignore accidental taps
+    if hold_time < MIN_HOLD_SECONDS:
+        print(f"  ⚠️  Too short ({hold_time:.1f}s) — hold longer to record")
+        threading.Thread(target=stop_recording, daemon=True).start()
+        return
 
+    print(f"⏹️  Stopped ({hold_time:.1f}s). Transcribing...")
+    beep("Pop")  # Different beep: recording stopped
+
+    def _stop_and_transcribe():
+        path = stop_recording()
+        if not path:
+            print("  ⚠️  No audio captured")
+            notify("VoiceClip", "No audio captured")
+            return
+
+        t0 = time.time()
+        text = transcribe_audio(path)
+        elapsed = time.time() - t0
+
+        if text:
+            copy_to_clipboard(text)
+            paste_from_clipboard()
+            beep("Glass")  # Success beep
+            preview = text[:150] + ("..." if len(text) > 150 else "")
+            print(f"  ✅ Copied! ({len(text)} chars, {elapsed:.1f}s)")
+            print(f'  📋 "{preview}"')
+            notify("VoiceClip ✅", text[:100])
+        else:
+            print("  ⚠️  No speech detected")
+            notify("VoiceClip", "No speech detected")
+
+    threading.Thread(target=_stop_and_transcribe, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("VoiceClip — mlx-whisper on Apple Silicon GPU")
-    print("\nAvailable microphones:")
-    for name in get_input_devices():
-        print(f"  {name}")
-    print("\nStarting...")
-    app = build_ui()
-    app.launch(theme=gr.themes.Soft())
+    print("=" * 50)
+    print("  🎙️  VoiceClip")
+    print("  Local voice → clipboard on Apple Silicon")
+    print("=" * 50)
+    print(f"\n  Model:        {MODEL}")
+    print(f"  English only: {ENGLISH_ONLY}")
+    print(f"\n  Microphones:")
+    list_mics()
+    print()
+    print("  ⌨️  Hold Right Option (⌥) to record")
+    print("     Release to transcribe & copy to clipboard")
+    print("     Ctrl+C to quit")
+    print()
+
+    listener = keyboard.Listener(on_press=_on_press, on_release=_on_release)
+    listener.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n👋 VoiceClip stopped.")
+        listener.stop()
+        sys.exit(0)
