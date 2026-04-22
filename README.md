@@ -2,15 +2,11 @@
 
 **Talk. It types.** One key, zero setup headaches.
 
-A free, open-source alternative to WhisperFlow and similar cloud transcription tools — except VoiceClip runs entirely on your Mac. No subscription, no cloud, no data leaving your laptop. Just your voice and your Apple Silicon GPU.
+A simple live transcription tool runs entirely on your Mac. No subscription, no cloud, no data leaving your laptop. Just your voice and your Apple Silicon GPU.
 
 VoiceClip turns your voice into text anywhere on your Mac. Hold a key, say what you're thinking, let go. Your words appear wherever your cursor is.
 
-```bash
-bash install.sh && voiceclip
-```
-
-That's it. You're done.
+That's it.
 
 ---
 
