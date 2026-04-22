@@ -1,1 +1,4 @@
-whisperx @ git+https://github.com/m-bain/whisperx.git
+mlx-whisper>=0.4.0
+pynput>=1.7.6
+sounddevice>=0.4.6
+soundfile>=0.12.1
