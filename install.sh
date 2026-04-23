@@ -76,6 +76,14 @@ cp -r "$SCRIPT_DIR/voiceclip" "$INSTALL_DIR/voiceclip"
 cp "$SCRIPT_DIR/transcribe.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/"
 
+# Copy default config if user doesn't have one yet (preserve existing config)
+if [[ ! -f "$INSTALL_DIR/config.json" ]]; then
+    cp "$SCRIPT_DIR/config.default.json" "$INSTALL_DIR/config.json"
+    echo "   Created default config.json"
+else
+    echo "   Keeping existing config.json"
+fi
+
 # Create virtual environment
 echo "🐍 Setting up Python environment..."
 if [[ ! -d "$VENV_DIR" ]]; then
@@ -124,4 +132,7 @@ echo "     → Enable your terminal app"
 echo ""
 echo "  Then just run: voiceclip"
 echo "  Hold Right Option (⌥) to record, release to transcribe!"
+echo ""
+echo "  📝 Config: $INSTALL_DIR/config.json"
+echo "     Edit to change model, add personas, or customize dictionary."
 echo ""

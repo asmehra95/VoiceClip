@@ -1,0 +1,39 @@
+{
+  "model": "large-v3-turbo",
+  "english_only": true,
+  "polish": false,
+  "polish_model": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+  "persona": "default",
+
+  "personas": {
+    "default": {
+      "prompt": "",
+      "dictionary": {}
+    },
+    "engineering": {
+      "prompt": "AWS, S3, DynamoDB, Lambda, EC2, CloudFormation, Kubernetes, Docker, API Gateway, microservices, latency, throughput, p99, SLA",
+      "dictionary": {
+        "dynamo db": "DynamoDB",
+        "cloud formation": "CloudFormation",
+        "s three": "S3",
+        "e c two": "EC2",
+        "kubernetes": "Kubernetes",
+        "api": "API"
+      }
+    },
+    "casual": {
+      "prompt": "Hey, sounds good, let me know, no worries, thanks",
+      "dictionary": {}
+    },
+    "medical": {
+      "prompt": "diagnosis, prognosis, prescription, symptoms, patient, clinical, therapy, medication, dosage, referral",
+      "dictionary": {}
+    }
+  },
+
+  "dictionary": {
+    "voiceclip": "VoiceClip",
+    "macos": "macOS",
+    "iphone": "iPhone"
+  }
+}
