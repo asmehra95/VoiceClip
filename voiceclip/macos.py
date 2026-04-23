@@ -98,21 +98,32 @@ def copy_paste_and_restore(text):
     """Copy text to clipboard, paste it, then restore the previous clipboard.
 
     This preserves whatever the user had copied before VoiceClip ran.
-    The restore happens after a short delay to ensure the paste completes.
+    Uses a synchronous paste so we know exactly when it's done, then
+    restores the clipboard immediately — no arbitrary delay.
     """
     # Save what's currently on the clipboard
     previous = _get_clipboard()
 
-    # Copy our text and paste it
+    # Copy our text
     copy_to_clipboard(text)
-    paste()
 
-    # Restore the previous clipboard after paste completes
+    # Paste synchronously — wait for the keystroke to be dispatched
+    time.sleep(PASTE_DELAY)
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to keystroke "v" using command down'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except Exception as e:
+        log.warning("Paste failed: %s", e)
+
+    # Restore immediately — the paste keystroke has been dispatched,
+    # the app has already read the clipboard by now
     if previous is not None:
-        def _restore():
-            time.sleep(0.5)  # Wait for paste to finish
-            copy_to_clipboard(previous)
-        threading.Thread(target=_restore, daemon=True).start()
+        time.sleep(0.05)  # 50ms safety margin for the app to read clipboard
+        copy_to_clipboard(previous)
 
 
 def paste():
