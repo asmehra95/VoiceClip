@@ -19,7 +19,8 @@ from voiceclip.transcriber import transcribe
 from voiceclip.formatter import format_text
 from voiceclip.polisher import is_available as polish_available, polish
 from voiceclip.macos import (
-    copy_to_clipboard, paste, select_and_replace, notify, beep,
+    copy_to_clipboard, copy_paste_and_restore, paste,
+    select_and_replace, notify, beep,
 )
 
 log = logging.getLogger(__name__)
@@ -141,9 +142,8 @@ class HotkeyHandler:
                 text = format_text(text)
 
             if text:
-                # Step 1: Paste immediately (raw formatted text)
-                copy_to_clipboard(text)
-                paste()
+                # Step 1: Paste immediately, restore user's previous clipboard
+                copy_paste_and_restore(text)
                 beep("Glass")
                 preview = text[:150] + ("..." if len(text) > 150 else "")
                 log.info("Copied %d chars in %.1fs", len(text), elapsed)

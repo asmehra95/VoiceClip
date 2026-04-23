@@ -65,8 +65,21 @@ def check_microphone():
     )
 
 # ---------------------------------------------------------------------------
-# Clipboard
+# Clipboard — with save/restore to preserve user's clipboard
 # ---------------------------------------------------------------------------
+
+
+def _get_clipboard() -> str | None:
+    """Read the current clipboard contents. Returns None on failure."""
+    try:
+        result = subprocess.run(
+            ["pbpaste"], capture_output=True, timeout=2,
+        )
+        if result.returncode == 0:
+            return result.stdout.decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    return None
 
 
 def copy_to_clipboard(text):
@@ -79,6 +92,27 @@ def copy_to_clipboard(text):
         proc.communicate(input=text.encode("utf-8"))
     except Exception as e:
         log.error("Clipboard error: %s", e)
+
+
+def copy_paste_and_restore(text):
+    """Copy text to clipboard, paste it, then restore the previous clipboard.
+
+    This preserves whatever the user had copied before VoiceClip ran.
+    The restore happens after a short delay to ensure the paste completes.
+    """
+    # Save what's currently on the clipboard
+    previous = _get_clipboard()
+
+    # Copy our text and paste it
+    copy_to_clipboard(text)
+    paste()
+
+    # Restore the previous clipboard after paste completes
+    if previous is not None:
+        def _restore():
+            time.sleep(0.5)  # Wait for paste to finish
+            copy_to_clipboard(previous)
+        threading.Thread(target=_restore, daemon=True).start()
 
 
 def paste():

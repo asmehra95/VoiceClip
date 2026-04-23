@@ -118,6 +118,7 @@ def _recorder_loop(conn):
             # so no new frames will be appended
             with frames_lock:
                 if not frames:
+                    print("[recorder] STOP: no frames captured", flush=True)
                     conn.send(None)
                     continue
                 captured = list(frames)
@@ -134,7 +135,16 @@ def _recorder_loop(conn):
                 rms = 0.0
 
             duration_native = total_samples / native_sr
+            print(
+                f"[recorder] STOP: {len(captured)} frames, "
+                f"{duration_native:.2f}s, RMS={rms:.6f}, "
+                f"threshold={SILENCE_RMS_THRESHOLD}",
+                flush=True,
+            )
+
             if duration_native < MIN_AUDIO_DURATION or rms < SILENCE_RMS_THRESHOLD:
+                reason = "too short" if duration_native < MIN_AUDIO_DURATION else "silence"
+                print(f"[recorder] Rejected: {reason}", flush=True)
                 conn.send(None)
                 continue
 
