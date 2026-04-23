@@ -1,4 +1,11 @@
-"""Global hotkey handler — hold Right Option (⌥) to record."""
+"""Global hotkey handler — hold Right Option (⌥) to record.
+
+Threading model:
+- pynput runs its own listener thread for key events
+- _on_press and _on_release are called on that thread
+- All blocking work (begin, end, transcribe) runs in background threads
+  to avoid blocking the pynput listener
+"""
 
 import logging
 import threading
@@ -9,6 +16,7 @@ from pynput import keyboard
 from voiceclip.config import MIN_HOLD_SECONDS
 from voiceclip.recorder import Recorder
 from voiceclip.transcriber import transcribe
+from voiceclip.formatter import format_text
 from voiceclip.macos import copy_to_clipboard, paste, notify, beep
 
 log = logging.getLogger(__name__)
@@ -18,11 +26,13 @@ class HotkeyHandler:
     """Manages the hold-to-record hotkey lifecycle.
 
     Ensures only one record/transcribe cycle runs at a time and
-    handles all error cases gracefully.
+    handles all error cases gracefully. All state flags are protected
+    by a lock to prevent races between pynput and worker threads.
     """
 
     def __init__(self, recorder: Recorder):
         self._recorder = recorder
+        self._lock = threading.Lock()
         self._active = False       # True while the key is held down
         self._press_time = 0.0
         self._busy = False         # True while a transcribe cycle is running
@@ -43,27 +53,45 @@ class HotkeyHandler:
             self._listener.stop()
 
     def _on_press(self, key):
-        if key == keyboard.Key.alt_r and not self._active and not self._busy:
+        if key != keyboard.Key.alt_r:
+            return
+
+        with self._lock:
+            if self._active or self._busy:
+                return
             self._active = True
             self._press_time = time.time()
 
-            try:
-                self._recorder.begin()
-            except RuntimeError as e:
-                log.error("Failed to start recording: %s", e)
+        # Move begin() + beep() off the pynput thread so we never block
+        # the keyboard listener (begin() can take up to 3s on timeout).
+        threading.Thread(
+            target=self._start_recording,
+            daemon=True,
+        ).start()
+
+    def _start_recording(self):
+        """Start the recorder and play the start sound. Runs in a worker thread."""
+        try:
+            self._recorder.begin()
+        except RuntimeError as e:
+            log.error("Failed to start recording: %s", e)
+            with self._lock:
                 self._active = False
-                self._try_restart_recorder()
-                return
-
-            beep("Tink")
-            log.info("Recording started")
-
-    def _on_release(self, key):
-        if key != keyboard.Key.alt_r or not self._active:
+            self._try_restart_recorder()
             return
 
-        self._active = False
-        hold_time = time.time() - self._press_time
+        beep("Tink")
+        log.info("Recording started")
+
+    def _on_release(self, key):
+        if key != keyboard.Key.alt_r:
+            return
+
+        with self._lock:
+            if not self._active:
+                return
+            self._active = False
+            hold_time = time.time() - self._press_time
 
         # Ignore accidental taps
         if hold_time < MIN_HOLD_SECONDS:
@@ -74,7 +102,9 @@ class HotkeyHandler:
         log.info("Recording stopped (%.1fs), transcribing...", hold_time)
         beep("Pop")
 
-        self._busy = True
+        with self._lock:
+            self._busy = True
+
         threading.Thread(
             target=self._stop_and_transcribe,
             daemon=True,
@@ -94,6 +124,10 @@ class HotkeyHandler:
             elapsed = time.time() - t0
 
             if text:
+                # Apply formatting and dictionary substitutions
+                text = format_text(text)
+
+            if text:
                 copy_to_clipboard(text)
                 paste()
                 beep("Glass")
@@ -111,7 +145,8 @@ class HotkeyHandler:
         except Exception as e:
             log.error("Unexpected error: %s", e)
         finally:
-            self._busy = False
+            with self._lock:
+                self._busy = False
 
     def _discard_recording(self):
         """Clean up a too-short recording in the background."""

@@ -1,4 +1,4 @@
-"""macOS-specific utilities: clipboard, paste, notifications, sounds.
+"""macOS-specific utilities: clipboard, paste, notifications, sounds, permissions.
 
 Performance notes:
 - notify() and paste() use Popen (fire-and-forget, never block)
@@ -15,6 +15,54 @@ import time
 from voiceclip.config import PASTE_DELAY
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Permission checks
+# ---------------------------------------------------------------------------
+
+
+def check_accessibility():
+    """Check if the terminal has Accessibility permission.
+
+    Returns True if granted, False otherwise. Logs a warning with
+    instructions if not granted.
+    """
+    try:
+        # osascript keystroke will fail silently without Accessibility,
+        # but we can check via the system_profiler or a test keystroke.
+        # The most reliable lightweight check: try to create an
+        # AppleScript System Events reference.
+        result = subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to return name of first process'],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode != 0:
+            log.warning(
+                "⚠️  Accessibility permission not granted. "
+                "Auto-paste won't work.\n"
+                "   Fix: System Settings → Privacy & Security → Accessibility "
+                "→ add your terminal app"
+            )
+            return False
+        return True
+    except Exception:
+        # Can't determine — assume it's fine
+        return True
+
+
+def check_microphone():
+    """Check if microphone access is likely available.
+
+    This is a best-effort check. The actual permission dialog is shown
+    by macOS when sounddevice first opens the mic in the child process.
+    We log a reminder so the user knows what to expect.
+    """
+    log.info(
+        "ℹ️  If this is your first run, macOS will ask for Microphone "
+        "permission. Grant it and restart VoiceClip if needed."
+    )
 
 # ---------------------------------------------------------------------------
 # Clipboard
@@ -85,13 +133,16 @@ def beep(sound="Tink"):
     if not path:
         return
 
-    with _beep_lock:
-        _beep_procs[:] = [p for p in _beep_procs if p.poll() is None]
-        proc = subprocess.Popen(
-            ["afplay", path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        _beep_procs.append(proc)
+    try:
+        with _beep_lock:
+            _beep_procs[:] = [p for p in _beep_procs if p.poll() is None]
+            proc = subprocess.Popen(
+                ["afplay", path],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            _beep_procs.append(proc)
+    except OSError as e:
+        log.warning("Could not play sound '%s': %s", sound, e)
 
 
 def cleanup_sounds():

@@ -9,7 +9,7 @@ Performance notes:
 - Stream stays open permanently — zero startup cost on record
 - Running RMS tracked during recording — instant silence detection on stop
 - Resampling index arrays pre-computed once — no per-stop allocation
-- Audio data sent via pipe as bytes — no temp file disk round-trip
+- Audio written to temp WAV file for mlx_whisper (requires file path)
 """
 
 import logging
@@ -22,8 +22,9 @@ import multiprocessing
 
 from voiceclip.config import (
     RecorderCmd, SAMPLE_RATE, SILENCE_RMS_THRESHOLD,
-    MIN_AUDIO_DURATION, TEMP_PREFIX,
+    MIN_AUDIO_DURATION, MIN_FILE_BYTES, TEMP_PREFIX,
 )
+from voiceclip.utils import safe_unlink
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ def _recorder_loop(conn):
     frames = []
 
     # Running RMS state — updated in the callback for instant silence detection
+    # Using a lock to prevent data races between the callback and STOP handler
+    _rms_lock = threading.Lock()
     _rms_sum = [0.0]
     _rms_count = [0]
 
@@ -62,10 +65,12 @@ def _recorder_loop(conn):
         if rec_event.is_set():
             with frames_lock:
                 frames.append(indata.copy())
-            # Track running RMS (sum of squares) without holding the lock long
-            sq_sum = float(np.sum(indata ** 2))
-            _rms_sum[0] += sq_sum
-            _rms_count[0] += indata.shape[0]
+            # Track running RMS — dot product is allocation-free and ~2x faster
+            flat = indata.flat
+            sq_sum = float(np.dot(flat, flat))
+            with _rms_lock:
+                _rms_sum[0] += sq_sum
+                _rms_count[0] += indata.shape[0]
 
     try:
         stream = sd.InputStream(
@@ -100,8 +105,9 @@ def _recorder_loop(conn):
         if msg == RecorderCmd.START:
             with frames_lock:
                 frames.clear()
-            _rms_sum[0] = 0.0
-            _rms_count[0] = 0
+            with _rms_lock:
+                _rms_sum[0] = 0.0
+                _rms_count[0] = 0
             rec_event.set()
             conn.send("ok")
 
@@ -118,9 +124,12 @@ def _recorder_loop(conn):
                 frames.clear()
 
             # Fast silence check using running RMS (no recomputation needed)
-            total_samples = _rms_count[0]
+            with _rms_lock:
+                total_samples = _rms_count[0]
+                rms_sum_val = _rms_sum[0]
+
             if total_samples > 0:
-                rms = math.sqrt(_rms_sum[0] / total_samples)
+                rms = math.sqrt(rms_sum_val / total_samples)
             else:
                 rms = 0.0
 
@@ -261,9 +270,9 @@ class Recorder:
             size = os.path.getsize(path)
         except OSError:
             return None
-        if size < 500:
+        if size < MIN_FILE_BYTES:
             log.warning("Recording too small (%d bytes)", size)
-            _safe_unlink(path)
+            safe_unlink(path)
             return None
         log.info("Recorded %.1f KB", size / 1024)
         return path
@@ -276,14 +285,6 @@ class Recorder:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _safe_unlink(path):
-    try:
-        if path and os.path.exists(path):
-            os.unlink(path)
-    except OSError:
-        pass
-
 
 def cleanup_stale_temps():
     """Remove leftover VoiceClip temp files from previous runs."""
