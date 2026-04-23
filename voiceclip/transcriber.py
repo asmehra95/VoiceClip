@@ -15,7 +15,7 @@ import mlx_whisper
 import numpy as np
 import soundfile as sf
 
-from voiceclip.config import ENGLISH_ONLY, TEMP_PREFIX, get_model_repo
+from voiceclip.config import ENGLISH_ONLY, TEMP_PREFIX, INITIAL_PROMPT, get_model_repo
 from voiceclip.utils import safe_unlink
 
 log = logging.getLogger(__name__)
@@ -28,32 +28,6 @@ _REPO, _MODEL_KEY = get_model_repo()
 # forcefully killed (C extension), but _busy will be cleared so the user
 # can keep recording.
 TRANSCRIBE_TIMEOUT = 120
-
-# Initial prompt built from user dictionary — biases Whisper toward
-# correct spellings of custom words. Set by set_initial_prompt().
-_initial_prompt: str | None = None
-
-
-def set_initial_prompt(words: list[str]):
-    """Build an initial_prompt from dictionary values.
-
-    Whisper uses initial_prompt as a conditioning prefix, which biases
-    the model toward producing these exact spellings. Call this after
-    loading the user dictionary.
-    """
-    global _initial_prompt
-    if words:
-        # Deduplicate while preserving order, limit to ~200 chars
-        seen = set()
-        unique = []
-        for w in words:
-            if w.lower() not in seen:
-                seen.add(w.lower())
-                unique.append(w)
-        _initial_prompt = ", ".join(unique)[:500]
-        log.info("Whisper initial_prompt set (%d words)", len(unique))
-    else:
-        _initial_prompt = None
 
 
 def _is_model_cached() -> bool:
@@ -148,8 +122,8 @@ def transcribe(audio_path):
                 no_speech_threshold=0.6,
                 condition_on_previous_text=True,
             )
-            if _initial_prompt:
-                kwargs["initial_prompt"] = _initial_prompt
+            if INITIAL_PROMPT:
+                kwargs["initial_prompt"] = INITIAL_PROMPT
 
             result_box[0] = mlx_whisper.transcribe(audio_path, **kwargs)
         except Exception as e:

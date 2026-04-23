@@ -1,6 +1,7 @@
 """LLM-based text polisher — optional post-processing via a local MLX model.
 
-Enabled by setting VOICECLIP_POLISH=true. Default off.
+Enabled via config.json "polish": true or VOICECLIP_POLISH=true.
+Default off.
 
 Uses the paste-first-polish-after pattern:
 1. Raw formatted text is pasted immediately (no delay)
@@ -12,23 +13,13 @@ Uses mlx-lm for Apple Silicon GPU inference.
 """
 
 import logging
-import os
 import threading
 
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration — read from voiceclip.config at runtime
 # ---------------------------------------------------------------------------
-
-# Toggle: set VOICECLIP_POLISH=true to enable
-POLISH_ENABLED = os.environ.get("VOICECLIP_POLISH", "false").lower() == "true"
-
-# Model to use for polishing — small and fast
-POLISH_MODEL = os.environ.get(
-    "VOICECLIP_POLISH_MODEL",
-    "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
-)
 
 # Max tokens to generate (polished text shouldn't be much longer than input)
 POLISH_MAX_TOKENS = 512
@@ -59,6 +50,7 @@ def is_available() -> bool:
     if _available is not None:
         return _available
 
+    from voiceclip.config import POLISH_ENABLED
     if not POLISH_ENABLED:
         _available = False
         return False
@@ -66,11 +58,12 @@ def is_available() -> bool:
     try:
         import mlx_lm  # noqa: F401
         _available = True
+        from voiceclip.config import POLISH_MODEL
         log.info("LLM polish enabled (model: %s)", POLISH_MODEL)
     except ImportError:
         _available = False
         log.warning(
-            "VOICECLIP_POLISH=true but mlx-lm is not installed. "
+            "polish=true but mlx-lm is not installed. "
             "Install with: pip install mlx-lm"
         )
     return _available
@@ -89,6 +82,7 @@ def _ensure_model():
 
         try:
             from mlx_lm import load
+            from voiceclip.config import POLISH_MODEL
             log.info("Loading polish model: %s ...", POLISH_MODEL)
             _model, _tokenizer = load(POLISH_MODEL)
             log.info("Polish model loaded")

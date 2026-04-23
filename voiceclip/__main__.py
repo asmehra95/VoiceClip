@@ -12,7 +12,6 @@ import sys
 import time
 
 from voiceclip import __version__
-from voiceclip.config import MODEL, ENGLISH_ONLY, validate
 from voiceclip.macos import cleanup_sounds, check_accessibility, check_microphone
 
 
@@ -41,25 +40,32 @@ def _check_dependencies():
 def main():
     multiprocessing.set_start_method("spawn", force=True)
     setup_logging()
-    validate()
     _check_dependencies()
+
+    # Load config from ~/.voiceclip/config.json (creates default on first run)
+    from voiceclip import config
+    config.load()
+    config.validate()
 
     log = logging.getLogger("voiceclip")
 
-    # Import after dependency check so we get friendly errors
+    # Import after config load so modules see the right values
     from voiceclip.recorder import Recorder, cleanup_stale_temps
     from voiceclip.transcriber import preload_model
     from voiceclip.hotkey import HotkeyHandler
-    from voiceclip.formatter import load_dictionary
+    from voiceclip.formatter import build_patterns
     from voiceclip.polisher import is_available as polish_available, preload_polish_model
 
     print("=" * 50)
     print(f"  🎙️  VoiceClip v{__version__}")
     print("  Local voice → clipboard on Apple Silicon")
     print("=" * 50)
-    print(f"\n  Model:        {MODEL}")
-    print(f"  English only: {ENGLISH_ONLY}")
-    print(f"  LLM polish:   {'enabled' if polish_available() else 'off (set VOICECLIP_POLISH=true to enable)'}")
+    print(f"\n  Model:        {config.MODEL}")
+    print(f"  English only: {config.ENGLISH_ONLY}")
+    print(f"  Persona:      {config.PERSONA}")
+    print(f"  Dictionary:   {len(config.DICTIONARY)} entries")
+    print(f"  LLM polish:   {'enabled' if polish_available() else 'off'}")
+    print(f"  Config:       {config.CONFIG_PATH}")
 
     # Check macOS permissions early
     check_microphone()
@@ -68,8 +74,8 @@ def main():
         print("  ⚠️  Accessibility not granted — auto-paste disabled")
         print("     Transcriptions will still be copied to clipboard")
 
-    # Load user dictionary for word replacements
-    load_dictionary()
+    # Build dictionary regex patterns from config
+    build_patterns()
 
     # Clean up temp files from previous runs
     cleanup_stale_temps()
@@ -89,7 +95,6 @@ def main():
         cleanup_sounds()
         sys.exit(0)
 
-    # handler is set later, but _shutdown references it — use a mutable container
     handler = type("H", (), {"stop": lambda self: None})()
 
     signal.signal(signal.SIGINT, _shutdown)
@@ -129,7 +134,6 @@ def main():
     # Start the hotkey listener
     real_handler = HotkeyHandler(recorder)
     real_handler.start()
-    # Replace the stub so _shutdown can stop it
     handler = real_handler
 
     try:
