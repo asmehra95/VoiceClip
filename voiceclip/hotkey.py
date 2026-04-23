@@ -119,6 +119,9 @@ class HotkeyHandler:
                 notify("VoiceClip", "No audio captured")
                 return
 
+            # Let the user know we're working on it
+            notify("VoiceClip", "🔄 Transcribing...")
+
             t0 = time.time()
             text = transcribe(path)
             elapsed = time.time() - t0

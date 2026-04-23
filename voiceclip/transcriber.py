@@ -56,13 +56,50 @@ def set_initial_prompt(words: list[str]):
         _initial_prompt = None
 
 
+def _is_model_cached() -> bool:
+    """Check if the model is already downloaded in the HuggingFace cache."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        # Check for a key file that indicates the model is downloaded
+        result = try_to_load_from_cache(_REPO, "config.json")
+        return result is not None
+    except Exception:
+        # Can't determine — assume not cached (will show spinner)
+        return False
+
+
 def preload_model():
     """Force-load the Whisper model into memory so the first transcription is fast.
 
     Call this at startup. mlx_whisper caches internally, so subsequent
     transcribe() calls reuse the loaded model.
+
+    Shows a spinner in the terminal during loading so the user knows
+    the app hasn't frozen (especially important during first-run download).
     """
     log.info("Preloading model: %s (%s)...", _MODEL_KEY, _REPO)
+
+    cached = _is_model_cached()
+    if not cached:
+        print("  ⬇️  Downloading model (this only happens once)...")
+
+    # Spinner runs in a background thread while preload happens
+    stop_spinner = threading.Event()
+
+    def _spin():
+        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        i = 0
+        label = "Downloading & loading" if not cached else "Loading"
+        while not stop_spinner.is_set():
+            print(f"\r  {frames[i % len(frames)]} {label} model...", end="", flush=True)
+            i += 1
+            stop_spinner.wait(0.1)
+        # Clear the spinner line
+        print("\r" + " " * 50 + "\r", end="", flush=True)
+
+    spinner = threading.Thread(target=_spin, daemon=True)
+    spinner.start()
+
     try:
         # Transcribe a tiny silent audio to trigger model loading
         # without doing real work. mlx_whisper will cache the model.
@@ -84,6 +121,9 @@ def preload_model():
         log.info("Model preloaded successfully")
     except Exception as e:
         log.warning("Model preload failed (will load on first use): %s", e)
+    finally:
+        stop_spinner.set()
+        spinner.join(timeout=1)
 
 
 def transcribe(audio_path):
