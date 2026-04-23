@@ -94,6 +94,36 @@ def paste():
         pass
 
 
+def select_and_replace(old_text, new_text):
+    """Replace previously pasted text with new text.
+
+    Strategy: use Cmd+Z to undo the paste, then paste the new text.
+    This is more reliable than trying to select exact character counts,
+    which varies by app and font rendering.
+    """
+    try:
+        # Undo the previous paste
+        time.sleep(0.1)
+        subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to keystroke "z" using command down'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+        time.sleep(0.1)
+
+        # Copy new text and paste it
+        copy_to_clipboard(new_text)
+        time.sleep(PASTE_DELAY)
+        subprocess.Popen(
+            ["osascript", "-e",
+             'tell application "System Events" to keystroke "v" using command down'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        log.warning("select_and_replace failed: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Notifications — fire-and-forget
 # ---------------------------------------------------------------------------

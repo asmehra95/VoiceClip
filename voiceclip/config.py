@@ -42,6 +42,12 @@ MIN_AUDIO_DURATION = 0.3  # Seconds
 # Temp file prefix so cleanup only touches our files
 TEMP_PREFIX = "voiceclip_"
 
+# LLM polish (opt-in) — set VOICECLIP_POLISH=true to enable
+# Uses paste-first-polish-after pattern: raw text pastes instantly,
+# LLM-polished version replaces it a moment later.
+# Requires: pip install mlx-lm
+POLISH_ENABLED = os.environ.get("VOICECLIP_POLISH", "false").lower() == "true"
+
 
 def validate():
     """Validate configuration at startup. Exits on error."""

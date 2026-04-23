@@ -51,6 +51,7 @@ def main():
     from voiceclip.transcriber import preload_model
     from voiceclip.hotkey import HotkeyHandler
     from voiceclip.formatter import load_dictionary
+    from voiceclip.polisher import is_available as polish_available, preload_polish_model
 
     print("=" * 50)
     print(f"  🎙️  VoiceClip v{__version__}")
@@ -58,6 +59,7 @@ def main():
     print("=" * 50)
     print(f"\n  Model:        {MODEL}")
     print(f"  English only: {ENGLISH_ONLY}")
+    print(f"  LLM polish:   {'enabled' if polish_available() else 'off (set VOICECLIP_POLISH=true to enable)'}")
 
     # Check macOS permissions early
     check_microphone()
@@ -104,6 +106,12 @@ def main():
     print("\n  Preloading Whisper model (first run downloads ~3 GB)...")
     preload_model()
     print("  ✅ Model ready")
+
+    # Preload the polish model if enabled
+    if polish_available():
+        print("\n  Preloading LLM polish model...")
+        preload_polish_model()
+        print("  ✅ Polish model ready")
 
     # List available mics
     print("\n  Microphones:")

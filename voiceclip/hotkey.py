@@ -17,7 +17,10 @@ from voiceclip.config import MIN_HOLD_SECONDS
 from voiceclip.recorder import Recorder
 from voiceclip.transcriber import transcribe
 from voiceclip.formatter import format_text
-from voiceclip.macos import copy_to_clipboard, paste, notify, beep
+from voiceclip.polisher import is_available as polish_available, polish
+from voiceclip.macos import (
+    copy_to_clipboard, paste, select_and_replace, notify, beep,
+)
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +114,14 @@ class HotkeyHandler:
         ).start()
 
     def _stop_and_transcribe(self):
-        """Stop recording, transcribe, copy+paste. Runs in a background thread."""
+        """Stop recording, transcribe, copy+paste. Runs in a background thread.
+
+        If LLM polish is enabled (VOICECLIP_POLISH=true), uses the
+        paste-first-polish-after pattern:
+        1. Paste raw formatted text immediately
+        2. Run LLM polish in background
+        3. Undo + re-paste with polished text
+        """
         try:
             path = self._recorder.end()
             if not path:
@@ -127,17 +137,24 @@ class HotkeyHandler:
             elapsed = time.time() - t0
 
             if text:
-                # Apply formatting and dictionary substitutions
+                # Apply regex formatting and dictionary substitutions
                 text = format_text(text)
 
             if text:
+                # Step 1: Paste immediately (raw formatted text)
                 copy_to_clipboard(text)
                 paste()
                 beep("Glass")
                 preview = text[:150] + ("..." if len(text) > 150 else "")
                 log.info("Copied %d chars in %.1fs", len(text), elapsed)
                 log.info('Text: "%s"', preview)
-                notify("VoiceClip ✅", text[:100])
+
+                # Step 2: If LLM polish is enabled, polish in background
+                # and replace the pasted text
+                if polish_available():
+                    self._polish_and_replace(text)
+                else:
+                    notify("VoiceClip ✅", text[:100])
             else:
                 log.warning("No speech detected")
                 notify("VoiceClip", "No speech detected")
@@ -150,6 +167,26 @@ class HotkeyHandler:
         finally:
             with self._lock:
                 self._busy = False
+
+    def _polish_and_replace(self, original_text):
+        """Run LLM polish and replace the pasted text if improved."""
+        try:
+            t0 = time.time()
+            polished = polish(original_text)
+            elapsed = time.time() - t0
+
+            if polished and polished != original_text:
+                select_and_replace(original_text, polished)
+                beep("Morse")  # Subtle sound to indicate polish applied
+                log.info("Polished in %.1fs: \"%s\"", elapsed, polished[:150])
+                notify("VoiceClip ✨", polished[:100])
+            else:
+                # No improvement or polish failed — original already pasted
+                log.info("Polish: no changes (%.1fs)", elapsed)
+                notify("VoiceClip ✅", original_text[:100])
+        except Exception as e:
+            log.error("Polish failed: %s", e)
+            notify("VoiceClip ✅", original_text[:100])
 
     def _discard_recording(self):
         """Clean up a too-short recording in the background."""
