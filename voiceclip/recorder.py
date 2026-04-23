@@ -53,6 +53,19 @@ def _recorder_loop(conn):
         default_dev = sd.default.device[0]
         dev_info = sd.query_devices(default_dev)
         native_sr = int(dev_info["default_samplerate"])
+        dev_name = dev_info.get("name", "Unknown")
+        print(
+            f"[recorder] Device: {dev_name} (idx={default_dev}, "
+            f"sr={native_sr}Hz, ch={dev_info['max_input_channels']})",
+            flush=True,
+        )
+        if native_sr < 16000:
+            print(
+                f"[recorder] ⚠️  Low sample rate ({native_sr}Hz). "
+                "Bluetooth HFP mode? Audio quality will be degraded. "
+                "Consider using the MacBook mic instead.",
+                flush=True,
+            )
     except Exception as e:
         conn.send(f"error:device_query:{e}")
         return
