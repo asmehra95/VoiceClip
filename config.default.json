@@ -4,6 +4,8 @@
   "polish": false,
   "polish_model": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
   "persona": "default",
+  "hotkey": "alt_r",
+  "hotkey_mode": "hold",
 
   "personas": {
     "default": {

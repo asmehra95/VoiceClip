@@ -1,4 +1,8 @@
-"""Global hotkey handler — hold Right Option (⌥) to record.
+"""Global hotkey handler — configurable key and mode.
+
+Supports two modes:
+- "hold": Hold key to record, release to stop and transcribe (default)
+- "toggle": Press once to start recording, press again to stop and transcribe
 
 Threading model:
 - pynput runs its own listener thread for key events
@@ -13,7 +17,7 @@ import time
 
 from pynput import keyboard
 
-from voiceclip.config import MIN_HOLD_SECONDS
+from voiceclip.config import MIN_HOLD_SECONDS, HOTKEY_MODE, resolve_hotkey
 from voiceclip.recorder import Recorder
 from voiceclip.transcriber import transcribe
 from voiceclip.formatter import format_text
@@ -27,7 +31,7 @@ log = logging.getLogger(__name__)
 
 
 class HotkeyHandler:
-    """Manages the hold-to-record hotkey lifecycle.
+    """Manages the hotkey lifecycle for both hold and toggle modes.
 
     Ensures only one record/transcribe cycle runs at a time and
     handles all error cases gracefully. All state flags are protected
@@ -37,10 +41,12 @@ class HotkeyHandler:
     def __init__(self, recorder: Recorder):
         self._recorder = recorder
         self._lock = threading.Lock()
-        self._active = False       # True while the key is held down
+        self._active = False       # True while recording is active
         self._press_time = 0.0
         self._busy = False         # True while a transcribe cycle is running
         self._listener = None
+        self._hotkey = resolve_hotkey()
+        self._mode = HOTKEY_MODE   # "hold" or "toggle"
 
     def start(self):
         """Start listening for the hotkey."""
@@ -49,48 +55,86 @@ class HotkeyHandler:
             on_release=self._on_release,
         )
         self._listener.start()
-        log.info("Hotkey listener started")
+        log.info("Hotkey listener started (mode=%s)", self._mode)
 
     def stop(self):
         """Stop listening."""
         if self._listener:
             self._listener.stop()
 
+    def _key_matches(self, key) -> bool:
+        """Check if the pressed/released key matches our configured hotkey."""
+        return key == self._hotkey
+
+    # ------------------------------------------------------------------
+    # Press handler
+    # ------------------------------------------------------------------
+
     def _on_press(self, key):
-        if key != keyboard.Key.alt_r:
+        if not self._key_matches(key):
             return
 
+        if self._mode == "toggle":
+            self._handle_toggle_press()
+        else:
+            self._handle_hold_press()
+
+    def _handle_hold_press(self):
+        """Hold mode: start recording on press."""
         with self._lock:
             if self._active or self._busy:
                 return
             self._active = True
             self._press_time = time.time()
 
-        # Move begin() + beep() off the pynput thread so we never block
-        # the keyboard listener (begin() can take up to 3s on timeout).
         threading.Thread(
             target=self._start_recording,
             daemon=True,
         ).start()
 
-    def _start_recording(self):
-        """Start the recorder and play the start sound. Runs in a worker thread."""
-        try:
-            self._recorder.begin()
-        except RuntimeError as e:
-            log.error("Failed to start recording: %s", e)
-            with self._lock:
-                self._active = False
-            self._try_restart_recorder()
-            return
+    def _handle_toggle_press(self):
+        """Toggle mode: press once to start, press again to stop."""
+        with self._lock:
+            if self._busy:
+                return
 
-        beep("Tink")
-        log.info("Recording started")
+            if not self._active:
+                # Start recording
+                self._active = True
+                self._press_time = time.time()
+                threading.Thread(
+                    target=self._start_recording,
+                    daemon=True,
+                ).start()
+            else:
+                # Stop recording
+                self._active = False
+                hold_time = time.time() - self._press_time
+
+        # If we just stopped, process the recording
+        if not self._active and hold_time > 0:
+            log.info("Recording stopped (%.1fs), transcribing...", hold_time)
+            beep("Pop")
+            with self._lock:
+                self._busy = True
+            threading.Thread(
+                target=self._stop_and_transcribe,
+                daemon=True,
+            ).start()
+
+    # ------------------------------------------------------------------
+    # Release handler
+    # ------------------------------------------------------------------
 
     def _on_release(self, key):
-        if key != keyboard.Key.alt_r:
+        if not self._key_matches(key):
             return
 
+        # Toggle mode handles everything in _on_press
+        if self._mode == "toggle":
+            return
+
+        # Hold mode: stop recording on release
         with self._lock:
             if not self._active:
                 return
@@ -114,15 +158,26 @@ class HotkeyHandler:
             daemon=True,
         ).start()
 
-    def _stop_and_transcribe(self):
-        """Stop recording, transcribe, copy+paste. Runs in a background thread.
+    # ------------------------------------------------------------------
+    # Recording lifecycle
+    # ------------------------------------------------------------------
 
-        If LLM polish is enabled (VOICECLIP_POLISH=true), uses the
-        paste-first-polish-after pattern:
-        1. Paste raw formatted text immediately
-        2. Run LLM polish in background
-        3. Undo + re-paste with polished text
-        """
+    def _start_recording(self):
+        """Start the recorder and play the start sound. Runs in a worker thread."""
+        try:
+            self._recorder.begin()
+        except RuntimeError as e:
+            log.error("Failed to start recording: %s", e)
+            with self._lock:
+                self._active = False
+            self._try_restart_recorder()
+            return
+
+        beep("Tink")
+        log.info("Recording started")
+
+    def _stop_and_transcribe(self):
+        """Stop recording, transcribe, copy+paste. Runs in a background thread."""
         try:
             path = self._recorder.end()
             if not path:
@@ -130,7 +185,6 @@ class HotkeyHandler:
                 notify("VoiceClip", "No audio captured")
                 return
 
-            # Let the user know we're working on it
             notify("VoiceClip", "🔄 Transcribing...")
 
             t0 = time.time()
@@ -138,19 +192,15 @@ class HotkeyHandler:
             elapsed = time.time() - t0
 
             if text:
-                # Apply regex formatting and dictionary substitutions
                 text = format_text(text)
 
             if text:
-                # Step 1: Paste immediately, restore user's previous clipboard
                 copy_paste_and_restore(text)
                 beep("Glass")
                 preview = text[:150] + ("..." if len(text) > 150 else "")
                 log.info("Copied %d chars in %.1fs", len(text), elapsed)
                 log.info('Text: "%s"', preview)
 
-                # Step 2: If LLM polish is enabled, polish in background
-                # and replace the pasted text
                 if polish_available():
                     self._polish_and_replace(text)
                 else:
@@ -177,11 +227,10 @@ class HotkeyHandler:
 
             if polished and polished != original_text:
                 select_and_replace(original_text, polished)
-                beep("Morse")  # Subtle sound to indicate polish applied
+                beep("Morse")
                 log.info("Polished in %.1fs: \"%s\"", elapsed, polished[:150])
                 notify("VoiceClip ✨", polished[:100])
             else:
-                # No improvement or polish failed — original already pasted
                 log.info("Polish: no changes (%.1fs)", elapsed)
                 notify("VoiceClip ✅", original_text[:100])
         except Exception as e:

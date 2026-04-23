@@ -70,6 +70,8 @@ _DEFAULT_CONFIG = {
     "polish": False,
     "polish_model": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
     "persona": "default",
+    "hotkey": "alt_r",
+    "hotkey_mode": "hold",
     "personas": {
         "default": {
             "prompt": "",
@@ -114,6 +116,8 @@ ENGLISH_ONLY = True
 POLISH_ENABLED = False
 POLISH_MODEL = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
 PERSONA = "default"
+HOTKEY = "alt_r"
+HOTKEY_MODE = "hold"  # "hold" = hold-to-record, "toggle" = press-to-start/press-to-stop
 
 # Populated by load() — the merged dictionary (global + persona)
 DICTIONARY: dict[str, str] = {}
@@ -148,7 +152,7 @@ def load():
     Call this once at startup. Sets all module-level config variables.
     """
     global MODEL, ENGLISH_ONLY, POLISH_ENABLED, POLISH_MODEL
-    global PERSONA, DICTIONARY, INITIAL_PROMPT, _raw
+    global PERSONA, DICTIONARY, INITIAL_PROMPT, HOTKEY, HOTKEY_MODE, _raw
 
     _ensure_config_file()
 
@@ -186,6 +190,11 @@ def load():
         cfg.get("polish_model", "mlx-community/Qwen2.5-0.5B-Instruct-4bit")
     )
     PERSONA = os.environ.get("VOICECLIP_PERSONA", cfg.get("persona", "default"))
+    HOTKEY = os.environ.get("VOICECLIP_HOTKEY", cfg.get("hotkey", "alt_r"))
+    HOTKEY_MODE = os.environ.get("VOICECLIP_HOTKEY_MODE", cfg.get("hotkey_mode", "hold"))
+    if HOTKEY_MODE not in ("hold", "toggle"):
+        log.warning("Invalid hotkey_mode '%s', using 'hold'", HOTKEY_MODE)
+        HOTKEY_MODE = "hold"
 
     # Resolve persona
     personas = cfg.get("personas", {})
@@ -244,3 +253,79 @@ def get_model_repo():
     else:
         key = MODEL
     return MODELS[key], key
+
+
+# ---------------------------------------------------------------------------
+# Hotkey resolution
+# ---------------------------------------------------------------------------
+
+# Map of config string → pynput key. Supports both Key attributes and
+# single characters for letter/number keys.
+_KEY_MAP = {
+    "alt_r": "Key.alt_r",
+    "alt_l": "Key.alt_l",
+    "ctrl_r": "Key.ctrl_r",
+    "ctrl_l": "Key.ctrl_l",
+    "shift_r": "Key.shift_r",
+    "shift_l": "Key.shift_l",
+    "cmd_r": "Key.cmd_r",
+    "cmd_l": "Key.cmd_l",
+    "caps_lock": "Key.caps_lock",
+    "f1": "Key.f1", "f2": "Key.f2", "f3": "Key.f3", "f4": "Key.f4",
+    "f5": "Key.f5", "f6": "Key.f6", "f7": "Key.f7", "f8": "Key.f8",
+    "f9": "Key.f9", "f10": "Key.f10", "f11": "Key.f11", "f12": "Key.f12",
+    "space": "Key.space",
+    "esc": "Key.esc",
+}
+
+
+def resolve_hotkey():
+    """Resolve the HOTKEY config string to a pynput key object.
+
+    Returns a pynput Key enum member or a KeyCode for character keys.
+    """
+    from pynput import keyboard
+
+    key_str = HOTKEY.lower().strip()
+
+    # Check named keys
+    if key_str in _KEY_MAP:
+        attr_path = _KEY_MAP[key_str]
+        # e.g. "Key.alt_r" → keyboard.Key.alt_r
+        parts = attr_path.split(".")
+        obj = keyboard
+        for part in parts:
+            obj = getattr(obj, part)
+        return obj
+
+    # Single character key (e.g., "z", "x")
+    if len(key_str) == 1:
+        return keyboard.KeyCode.from_char(key_str)
+
+    # Try as a pynput Key attribute directly
+    try:
+        return getattr(keyboard.Key, key_str)
+    except AttributeError:
+        log.warning("Unknown hotkey '%s', falling back to Right Option", HOTKEY)
+        return keyboard.Key.alt_r
+
+
+def hotkey_display_name() -> str:
+    """Return a human-readable name for the configured hotkey."""
+    names = {
+        "alt_r": "Right Option (⌥)",
+        "alt_l": "Left Option (⌥)",
+        "ctrl_r": "Right Control (⌃)",
+        "ctrl_l": "Left Control (⌃)",
+        "shift_r": "Right Shift (⇧)",
+        "shift_l": "Left Shift (⇧)",
+        "cmd_r": "Right Command (⌘)",
+        "cmd_l": "Left Command (⌘)",
+        "caps_lock": "Caps Lock",
+        "f1": "F1", "f2": "F2", "f3": "F3", "f4": "F4",
+        "f5": "F5", "f6": "F6", "f7": "F7", "f8": "F8",
+        "f9": "F9", "f10": "F10", "f11": "F11", "f12": "F12",
+        "space": "Space",
+        "esc": "Escape",
+    }
+    return names.get(HOTKEY.lower().strip(), HOTKEY)

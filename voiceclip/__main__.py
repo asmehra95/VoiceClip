@@ -63,6 +63,7 @@ def main():
     print(f"\n  Model:        {config.MODEL}")
     print(f"  English only: {config.ENGLISH_ONLY}")
     print(f"  Persona:      {config.PERSONA}")
+    print(f"  Hotkey:       {config.hotkey_display_name()} ({config.HOTKEY_MODE} mode)")
     print(f"  Dictionary:   {len(config.DICTIONARY)} entries")
     print(f"  LLM polish:   {'enabled' if polish_available() else 'off'}")
     print(f"  Config:       {config.CONFIG_PATH}")
@@ -126,8 +127,13 @@ def main():
         log.warning("Could not list devices: %s", e)
 
     print()
-    print("  ⌨️  Hold Right Option (⌥) to record")
-    print("     Release to transcribe & copy to clipboard")
+    hotkey_name = config.hotkey_display_name()
+    if config.HOTKEY_MODE == "toggle":
+        print(f"  ⌨️  Press {hotkey_name} to start recording")
+        print(f"     Press again to stop & transcribe")
+    else:
+        print(f"  ⌨️  Hold {hotkey_name} to record")
+        print("     Release to transcribe & copy to clipboard")
     print("     Ctrl+C to quit")
     print()
 
