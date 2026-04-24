@@ -77,6 +77,8 @@ All config lives in `~/.voiceclip/config.json`. A default is created on first ru
   "english_only": true,
   "polish": false,
   "persona": "default",
+  "hotkey": "alt_r",
+  "hotkey_mode": "hold",
   "dictionary": {
     "voiceclip": "VoiceClip",
     "macos": "macOS"
@@ -90,6 +92,8 @@ Environment variables override config for quick one-off changes:
 VOICECLIP_MODEL=small voiceclip
 VOICECLIP_PERSONA=engineering voiceclip
 VOICECLIP_ENGLISH_ONLY=false voiceclip
+VOICECLIP_HOTKEY=f5 voiceclip
+VOICECLIP_HOTKEY_MODE=toggle voiceclip
 ```
 
 See `config.default.json` in the repo for the full structure with all options.
@@ -125,6 +129,24 @@ Personas bias Whisper toward domain-specific vocabulary and fix common misheard 
 The `prompt` field biases Whisper during transcription. The `dictionary` fixes words after transcription. Both are optional.
 
 The global `dictionary` always applies on top of the active persona's dictionary.
+
+## Hotkey
+
+Default is **Right Option (⌥)** in **hold** mode (hold to record, release to stop). Both the key and mode are configurable.
+
+**Change the key:**
+
+```json
+"hotkey": "f5"
+```
+
+Supported keys: `alt_r`, `alt_l`, `ctrl_r`, `ctrl_l`, `shift_r`, `shift_l`, `cmd_r`, `cmd_l`, `caps_lock`, `f1`–`f12`, `space`, `esc`, or any single letter.
+
+**Toggle mode** (press once to start, press again to stop — useful for longer recordings or accessibility):
+
+```json
+"hotkey_mode": "toggle"
+```
 
 ## Smart Formatting
 
@@ -190,6 +212,8 @@ VoiceClip downloads the right model automatically on first run. Pick the one tha
 | Says "Thank you" or random text | Recording was mostly silence — speak louder or check your mic |
 | Slow transcription | Try `VOICECLIP_MODEL=small voiceclip` or close GPU-heavy apps |
 | App appears frozen on first run | Model is downloading (~3 GB). A spinner shows progress. |
+| Bad accuracy with Bluetooth headset | Bluetooth mics use low-quality HFP mode (8kHz). Use MacBook mic for input and headset for output only, or use a USB headset |
+| LLM polish says "not installed" | Run `pip install mlx-lm` in your VoiceClip venv |
 
 ## Project structure
 
@@ -209,6 +233,7 @@ transcribe.py         # Launcher
 install.sh            # One-command installer
 config.default.json   # Default configuration with example personas
 requirements.txt      # Dependencies
+tests/                # Unit tests (pytest)
 ```
 
 ## License
