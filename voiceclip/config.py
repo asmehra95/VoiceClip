@@ -204,7 +204,12 @@ def load():
         "VOICECLIP_HISTORY",
         str(cfg.get("history", False))
     ).lower() == "true"
-    HISTORY_MAX_DAYS = int(cfg.get("history_max_days", 30))
+    try:
+        HISTORY_MAX_DAYS = int(cfg.get("history_max_days", 30))
+    except (ValueError, TypeError):
+        HISTORY_MAX_DAYS = 30
+    if HISTORY_MAX_DAYS < 0:
+        HISTORY_MAX_DAYS = 30
 
     # Resolve persona
     personas = cfg.get("personas", {})

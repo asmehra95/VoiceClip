@@ -83,7 +83,7 @@ class TestQuery:
         history.save("lunch plans", "Lunch at noon.", 1.0)
         result = history.query_search("meeting")
         assert "Meeting notes" in result
-        assert "1 results" in result
+        assert "1 result)" in result
 
     def test_query_search_no_results(self):
         history.init()
@@ -106,7 +106,7 @@ class TestClear:
         history.save("one", "One.", 1.0)
         history.save("two", "Two.", 1.0)
         assert history.count() == 2
-        history.clear_all()
+        history.clear_all(force=True)
         assert history.count() == 0
 
 

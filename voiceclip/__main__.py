@@ -162,6 +162,13 @@ def _run_voiceclip():
             pass
         recorder.shutdown()
         cleanup_sounds()
+        # Close history DB if open
+        if config.HISTORY_ENABLED:
+            try:
+                from voiceclip.history import close as close_history
+                close_history()
+            except Exception:
+                pass
         sys.exit(0)
 
     handler = type("H", (), {"stop": lambda self: None})()
