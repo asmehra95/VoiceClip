@@ -141,6 +141,7 @@ def _ensure_config_file():
         os.makedirs(CONFIG_DIR, exist_ok=True)
         with open(CONFIG_PATH, "w") as f:
             json.dump(_DEFAULT_CONFIG, f, indent=2)
+        os.chmod(CONFIG_PATH, 0o600)
         log.info("Created config at %s", CONFIG_PATH)
     except OSError as e:
         log.warning("Could not create config file: %s", e)
