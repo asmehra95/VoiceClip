@@ -6,6 +6,8 @@
   "persona": "default",
   "hotkey": "alt_r",
   "hotkey_mode": "hold",
+  "history": false,
+  "history_max_days": 30,
 
   "personas": {
     "default": {

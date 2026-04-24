@@ -118,6 +118,8 @@ POLISH_MODEL = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
 PERSONA = "default"
 HOTKEY = "alt_r"
 HOTKEY_MODE = "hold"  # "hold" = hold-to-record, "toggle" = press-to-start/press-to-stop
+HISTORY_ENABLED = False
+HISTORY_MAX_DAYS = 30
 
 # Populated by load() — the merged dictionary (global + persona)
 DICTIONARY: dict[str, str] = {}
@@ -153,7 +155,8 @@ def load():
     Call this once at startup. Sets all module-level config variables.
     """
     global MODEL, ENGLISH_ONLY, POLISH_ENABLED, POLISH_MODEL
-    global PERSONA, DICTIONARY, INITIAL_PROMPT, HOTKEY, HOTKEY_MODE, _raw
+    global PERSONA, DICTIONARY, INITIAL_PROMPT, HOTKEY, HOTKEY_MODE
+    global HISTORY_ENABLED, HISTORY_MAX_DAYS, _raw
 
     _ensure_config_file()
 
@@ -196,6 +199,12 @@ def load():
     if HOTKEY_MODE not in ("hold", "toggle"):
         log.warning("Invalid hotkey_mode '%s', using 'hold'", HOTKEY_MODE)
         HOTKEY_MODE = "hold"
+
+    HISTORY_ENABLED = os.environ.get(
+        "VOICECLIP_HISTORY",
+        str(cfg.get("history", False))
+    ).lower() == "true"
+    HISTORY_MAX_DAYS = int(cfg.get("history_max_days", 30))
 
     # Resolve persona
     personas = cfg.get("personas", {})

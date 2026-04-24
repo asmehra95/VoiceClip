@@ -2,9 +2,11 @@
 VoiceClip entry point.
 
 Usage:
-    python -m voiceclip
+    python -m voiceclip              # Start recording mode
+    python -m voiceclip history      # View transcription history
 """
 
+import argparse
 import logging
 import multiprocessing
 import signal
@@ -23,8 +25,7 @@ def setup_logging():
 
 
 def _check_dependencies():
-    """Verify critical dependencies are importable. Exit with a friendly
-    message if anything is missing (instead of a cryptic child-process crash)."""
+    """Verify critical dependencies are importable."""
     missing = []
     for mod in ("sounddevice", "soundfile", "mlx_whisper", "pynput", "numpy"):
         try:
@@ -37,19 +38,79 @@ def _check_dependencies():
         sys.exit(1)
 
 
-def main():
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="voiceclip",
+        description="Local voice-to-clipboard for macOS",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"VoiceClip {__version__}"
+    )
+
+    sub = parser.add_subparsers(dest="command")
+
+    # history subcommand
+    hist = sub.add_parser("history", help="View transcription history")
+    hist.add_argument("--today", action="store_true", help="Show today's transcriptions")
+    hist.add_argument("--yesterday", action="store_true", help="Show yesterday's transcriptions")
+    hist.add_argument("--search", type=str, metavar="TERM", help="Search by keyword")
+    hist.add_argument("--copy", type=int, metavar="ID", help="Copy entry by ID to clipboard")
+    hist.add_argument("--clear", action="store_true", help="Delete all history")
+    hist.add_argument("--count", action="store_true", help="Show total count")
+    hist.add_argument("-n", type=int, default=10, help="Number of results (default: 10)")
+
+    return parser
+
+
+def _handle_history(args):
+    """Handle the history subcommand."""
+    from voiceclip import config
+    config.load()
+
+    if not config.HISTORY_ENABLED:
+        print("History is not enabled. Set \"history\": true in ~/.voiceclip/config.json")
+        sys.exit(0)
+
+    from voiceclip.history import (
+        init, query_recent, query_today, query_yesterday,
+        query_search, get_by_id, clear_all, count,
+    )
+    init()
+
+    if args.clear:
+        clear_all()
+    elif args.count:
+        print(f"  {count()} transcriptions in history")
+    elif args.copy:
+        text = get_by_id(args.copy)
+        if text:
+            from voiceclip.macos import copy_to_clipboard
+            copy_to_clipboard(text)
+            print(f"  Copied to clipboard: \"{text[:100]}\"")
+        else:
+            print(f"  Entry {args.copy} not found")
+    elif args.search:
+        print(query_search(args.search, limit=args.n))
+    elif args.today:
+        print(query_today())
+    elif args.yesterday:
+        print(query_yesterday())
+    else:
+        print(query_recent(limit=args.n))
+
+
+def _run_voiceclip():
+    """Main recording mode."""
     multiprocessing.set_start_method("spawn", force=True)
     setup_logging()
     _check_dependencies()
 
-    # Load config from ~/.voiceclip/config.json (creates default on first run)
     from voiceclip import config
     config.load()
     config.validate()
 
     log = logging.getLogger("voiceclip")
 
-    # Import after config load so modules see the right values
     from voiceclip.recorder import Recorder, cleanup_stale_temps
     from voiceclip.transcriber import preload_model
     from voiceclip.hotkey import HotkeyHandler
@@ -65,7 +126,6 @@ def main():
     print(f"  Persona:      {config.PERSONA}")
     print(f"  Hotkey:       {config.hotkey_display_name()} ({config.HOTKEY_MODE} mode)")
     print(f"  Dictionary:   {len(config.DICTIONARY)} entries")
-    # Show polish status with clear guidance if misconfigured
     if polish_available():
         print("  LLM polish:   ✅ enabled")
     elif config.POLISH_ENABLED:
@@ -73,26 +133,27 @@ def main():
         print("                 Run: pip install mlx-lm")
     else:
         print("  LLM polish:   off")
+    print(f"  History:      {'✅ enabled' if config.HISTORY_ENABLED else 'off'}")
     print(f"  Config:       {config.CONFIG_PATH}")
 
-    # Check macOS permissions early
+    # Initialize history if enabled
+    if config.HISTORY_ENABLED:
+        from voiceclip.history import init as init_history, cleanup as cleanup_history
+        init_history()
+        cleanup_history(config.HISTORY_MAX_DAYS)
+
     check_microphone()
     has_accessibility = check_accessibility()
     if not has_accessibility:
         print("  ⚠️  Accessibility not granted — auto-paste disabled")
         print("     Transcriptions will still be copied to clipboard")
 
-    # Build dictionary regex patterns from config
     build_patterns()
-
-    # Clean up temp files from previous runs
     cleanup_stale_temps()
 
-    # Start the audio recorder child process
     print("\n  Starting audio recorder...")
     recorder = Recorder()
 
-    # Set up a cleanup handler so Ctrl+C at any point cleans up the recorder
     def _shutdown(signum=None, frame=None):
         print("\n👋 VoiceClip stopped.")
         try:
@@ -115,18 +176,15 @@ def main():
         sys.exit(1)
     print("  ✅ Recorder ready")
 
-    # Preload the Whisper model so first transcription is fast
     print("\n  Preloading Whisper model (first run downloads ~3 GB)...")
     preload_model()
     print("  ✅ Model ready")
 
-    # Preload the polish model if enabled
     if polish_available():
         print("\n  Preloading LLM polish model...")
         preload_polish_model()
         print("  ✅ Polish model ready")
 
-    # List available mics
     print("\n  Microphones:")
     try:
         print(recorder.list_devices())
@@ -141,10 +199,11 @@ def main():
     else:
         print(f"  ⌨️  Hold {hotkey_name} to record")
         print("     Release to transcribe & copy to clipboard")
+    if config.HISTORY_ENABLED:
+        print("     History: voiceclip history")
     print("     Ctrl+C to quit")
     print()
 
-    # Start the hotkey listener
     real_handler = HotkeyHandler(recorder)
     real_handler.start()
     handler = real_handler
@@ -154,6 +213,16 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         _shutdown()
+
+
+def main():
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    if args.command == "history":
+        _handle_history(args)
+    else:
+        _run_voiceclip()
 
 
 if __name__ == "__main__":

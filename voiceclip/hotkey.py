@@ -17,7 +17,7 @@ import time
 
 from pynput import keyboard
 
-from voiceclip.config import MIN_HOLD_SECONDS, HOTKEY_MODE, resolve_hotkey
+from voiceclip.config import MIN_HOLD_SECONDS, HOTKEY_MODE, HISTORY_ENABLED, resolve_hotkey
 from voiceclip.recorder import Recorder
 from voiceclip.transcriber import transcribe
 from voiceclip.formatter import format_text
@@ -191,10 +191,17 @@ class HotkeyHandler:
             text = transcribe(path)
             elapsed = time.time() - t0
 
+            raw_text = text  # Save before formatting
+
             if text:
                 text = format_text(text)
 
             if text:
+                # Save to history if enabled
+                if HISTORY_ENABLED:
+                    from voiceclip.history import save as save_history
+                    save_history(raw_text or "", text, elapsed)
+
                 copy_paste_and_restore(text)
                 beep("Glass")
                 preview = text[:150] + ("..." if len(text) > 150 else "")
