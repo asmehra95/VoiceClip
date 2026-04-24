@@ -141,18 +141,9 @@ def polish(text: str) -> str | None:
             # Clean up: strip whitespace and any quotes the model might add
             polished = polished.strip().strip('"').strip("'").strip()
 
-            log.info("Polish input:  \"%s\"", text[:100])
-            log.info("Polish output: \"%s\"", polished[:100] if polished else "(empty)")
-
-            # Sanity check: if the model returned something wildly different
-            # in length, it probably hallucinated — reject it
+            # Sanity check: reject wildly different length (hallucination)
             if polished and 0.3 < len(polished) / max(len(text), 1) < 3.0:
                 result_box[0] = polished
-            else:
-                log.warning(
-                    "Polish result rejected (length ratio: %.1f)",
-                    len(polished) / max(len(text), 1) if polished else 0,
-                )
         except Exception as e:
             log.error("Polish error: %s", e)
 
