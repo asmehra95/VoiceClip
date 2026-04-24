@@ -65,7 +65,14 @@ def main():
     print(f"  Persona:      {config.PERSONA}")
     print(f"  Hotkey:       {config.hotkey_display_name()} ({config.HOTKEY_MODE} mode)")
     print(f"  Dictionary:   {len(config.DICTIONARY)} entries")
-    print(f"  LLM polish:   {'enabled' if polish_available() else 'off'}")
+    # Show polish status with clear guidance if misconfigured
+    if polish_available():
+        print("  LLM polish:   ✅ enabled")
+    elif config.POLISH_ENABLED:
+        print("  LLM polish:   ⚠️  enabled in config but mlx-lm not installed")
+        print("                 Run: pip install mlx-lm")
+    else:
+        print("  LLM polish:   off")
     print(f"  Config:       {config.CONFIG_PATH}")
 
     # Check macOS permissions early
