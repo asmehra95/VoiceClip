@@ -2,9 +2,9 @@
 
 **Talk. It types.** One key, zero setup headaches.
 
-VoiceClip turns your voice into text anywhere on your Mac — Slack, email, docs, terminal, anywhere you can type. Hold a key, speak, let go. Done.
+VoiceClip turns your voice into text anywhere on your Mac — Slack, email, docs, terminal, anywhere you can type. Hold a key, speak, let go.
 
-Everything runs locally on your Apple Silicon GPU. No cloud, no subscription, no data leaves your laptop.
+Everything runs locally on your Apple Silicon GPU (any Mac from 2021 or newer). No cloud, no subscription, no data leaves your laptop. Audio is deleted immediately after transcription.
 
 ---
 
@@ -24,14 +24,12 @@ That's it. Hold **Right Option (⌥)**, speak, release. Your words appear where 
 
 ## How It Works
 
-1. Run `voiceclip` in your terminal
-2. Open any app — Slack, Gmail, a doc, anything
-3. **Hold Right Option (⌥)** — you hear a *tink*
-4. **Speak** — "Hey, running 10 minutes late to the standup"
-5. **Release** — you hear a *pop*, then a *chime*
-6. Text appears where your cursor was
+1. **Hold Right Option (⌥)** — you hear a *tink*
+2. **Speak** — "Hey, running 10 minutes late to the standup"
+3. **Release** — you hear a *pop*, then a *chime*
+4. Text appears where your cursor was
 
-Your clipboard stays untouched. No copy-paste needed.
+Works in any app. Your clipboard stays untouched.
 
 ---
 
@@ -95,6 +93,20 @@ pip install -r requirements.txt
 python transcribe.py
 ```
 
+### Update
+
+Pull the latest code and re-run the installer:
+
+```bash
+cd voiceclip && git pull && bash install.sh
+```
+
+### Uninstall
+
+```bash
+rm -rf ~/.voiceclip ~/.local/bin/voiceclip
+```
+
 ---
 
 ## Configuration
@@ -139,7 +151,7 @@ Supported: `alt_r`, `alt_l`, `ctrl_r`, `ctrl_l`, `shift_r`, `shift_l`, `cmd_r`, 
 
 ### Toggle mode
 
-If holding a key is uncomfortable (RSI, accessibility needs, or longer recordings), switch to toggle mode — press once to start, press again to stop:
+If holding a key is uncomfortable (repetitive strain injury, accessibility needs, or longer recordings), switch to toggle mode — press once to start, press again to stop:
 
 ```json
 "hotkey_mode": "toggle"
@@ -177,7 +189,7 @@ Add a persona to the `personas` section of your config:
 ```json
 "personas": {
   "my-team": {
-    "prompt": "SIM, CR, oncall, Brazil, pip, Avtar, Arjun",
+    "prompt": "SIM, CR, oncall, Brazil, pip, Avtar, ",
     "dictionary": {
       "sim": "SIM",
       "c r": "CR"
@@ -203,8 +215,8 @@ VoiceClip converts spoken commands into formatting — no extra setup needed:
 | "comma" | `,` |
 | "question mark" | `?` |
 | "exclamation mark" | `!` |
-| "new line" | ↵ (line break) |
-| "new paragraph" | ↵↵ (blank line) |
+| "new line" | line break |
+| "new paragraph" | blank line |
 | "bullet" | `• ` |
 | "colon" | `:` |
 | "open quote" / "close quote" | `"` |
@@ -251,6 +263,16 @@ Change with:
 ```json
 "model": "small"
 ```
+
+### Multilingual
+
+VoiceClip defaults to English. To transcribe other languages, set:
+
+```json
+"english_only": false
+```
+
+Whisper auto-detects the language. Works best with `large-v3-turbo` or `large-v3` models.
 
 ---
 
@@ -311,6 +333,6 @@ tests/                # Unit tests (95 tests, pytest)
 
 ## License
 
-MIT — do whatever you want with it. See [LICENSE](LICENSE).
+MIT — free and open source. See [LICENSE](LICENSE).
 
 Built with [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper), [pynput](https://github.com/moses-palmer/pynput), and [sounddevice](https://python-sounddevice.readthedocs.io/).
