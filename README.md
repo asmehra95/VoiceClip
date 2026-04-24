@@ -205,30 +205,6 @@ The global `dictionary` in your config always applies on top of the active perso
 
 ---
 
-## Voice Commands
-
-VoiceClip converts spoken commands into formatting — no extra setup needed:
-
-| Say this | Get this |
-|---|---|
-| "period" | `.` |
-| "comma" | `,` |
-| "question mark" | `?` |
-| "exclamation mark" | `!` |
-| "new line" | line break |
-| "new paragraph" | blank line |
-| "bullet" | `• ` |
-| "colon" | `:` |
-| "open quote" / "close quote" | `"` |
-
-**Example:** Say *"Hey comma running 10 minutes late period I will join from my phone period"*
-
-**Result:** Hey, running 10 minutes late. I will join from my phone.
-
-VoiceClip also auto-capitalizes sentences and fixes standalone "i" → "I".
-
----
-
 ## Grammar Polish (opt-in)
 
 For even cleaner output, enable the local AI grammar fixer. It runs a small language model on your GPU.
@@ -317,7 +293,7 @@ voiceclip/
     config.py         # Config loader (JSON + env overrides)
     recorder.py       # Audio capture (separate process)
     transcriber.py    # Whisper inference on GPU
-    formatter.py      # Text cleanup and voice commands
+    formatter.py      # Text cleanup and dictionary
     polisher.py       # Optional AI grammar polish
     hotkey.py         # Hotkey handler (hold + toggle modes)
     macos.py          # Clipboard, paste, sounds, permissions
