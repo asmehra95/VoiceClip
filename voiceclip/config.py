@@ -67,8 +67,6 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 _DEFAULT_CONFIG = {
     "model": "large-v3-turbo",
     "english_only": True,
-    "polish": False,
-    "polish_model": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
     "persona": "default",
     "hotkey": "alt_r",
     "hotkey_mode": "hold",
@@ -113,8 +111,6 @@ _DEFAULT_CONFIG = {
 # Set by load() at startup, overridable by env vars.
 MODEL = "large-v3-turbo"
 ENGLISH_ONLY = True
-POLISH_ENABLED = False
-POLISH_MODEL = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
 PERSONA = "default"
 HOTKEY = "alt_r"
 HOTKEY_MODE = "hold"  # "hold" = hold-to-record, "toggle" = press-to-start/press-to-stop
@@ -154,9 +150,8 @@ def load():
 
     Call this once at startup. Sets all module-level config variables.
     """
-    global MODEL, ENGLISH_ONLY, POLISH_ENABLED, POLISH_MODEL
-    global PERSONA, DICTIONARY, INITIAL_PROMPT, HOTKEY, HOTKEY_MODE
-    global HISTORY_ENABLED, HISTORY_MAX_DAYS, _raw
+    global MODEL, ENGLISH_ONLY, PERSONA, DICTIONARY, INITIAL_PROMPT
+    global HOTKEY, HOTKEY_MODE, HISTORY_ENABLED, HISTORY_MAX_DAYS, _raw
 
     _ensure_config_file()
 

@@ -21,10 +21,9 @@ from voiceclip.config import MIN_HOLD_SECONDS, HOTKEY_MODE, HISTORY_ENABLED, res
 from voiceclip.recorder import Recorder
 from voiceclip.transcriber import transcribe
 from voiceclip.formatter import format_text
-from voiceclip.polisher import is_available as polish_available, polish
 from voiceclip.macos import (
     copy_to_clipboard, copy_paste_and_restore, paste,
-    select_and_replace, notify, beep,
+    notify, beep,
 )
 
 log = logging.getLogger(__name__)
@@ -207,11 +206,7 @@ class HotkeyHandler:
                 preview = text[:150] + ("..." if len(text) > 150 else "")
                 log.info("Copied %d chars in %.1fs", len(text), elapsed)
                 log.info('Text: "%s"', preview)
-
-                if polish_available():
-                    self._polish_and_replace(text)
-                else:
-                    notify("VoiceClip ✅", text[:100])
+                notify("VoiceClip ✅", text[:100])
             else:
                 log.warning("No speech detected")
                 notify("VoiceClip", "No speech detected")
@@ -224,25 +219,6 @@ class HotkeyHandler:
         finally:
             with self._lock:
                 self._busy = False
-
-    def _polish_and_replace(self, original_text):
-        """Run LLM polish and replace the pasted text if improved."""
-        try:
-            t0 = time.time()
-            polished = polish(original_text)
-            elapsed = time.time() - t0
-
-            if polished and polished != original_text:
-                select_and_replace(original_text, polished)
-                beep("Morse")
-                log.info("Polished in %.1fs: \"%s\"", elapsed, polished[:150])
-                notify("VoiceClip ✨", polished[:100])
-            else:
-                log.info("Polish: no changes (%.1fs)", elapsed)
-                notify("VoiceClip ✅", original_text[:100])
-        except Exception as e:
-            log.error("Polish failed: %s", e)
-            notify("VoiceClip ✅", original_text[:100])
 
     def _discard_recording(self):
         """Clean up a too-short recording in the background."""

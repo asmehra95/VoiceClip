@@ -115,7 +115,6 @@ def _run_voiceclip():
     from voiceclip.transcriber import preload_model
     from voiceclip.hotkey import HotkeyHandler
     from voiceclip.formatter import build_patterns
-    from voiceclip.polisher import is_available as polish_available, preload_polish_model
 
     print("=" * 50)
     print(f"  🎙️  VoiceClip v{__version__}")
@@ -126,13 +125,6 @@ def _run_voiceclip():
     print(f"  Persona:      {config.PERSONA}")
     print(f"  Hotkey:       {config.hotkey_display_name()} ({config.HOTKEY_MODE} mode)")
     print(f"  Dictionary:   {len(config.DICTIONARY)} entries")
-    if polish_available():
-        print("  LLM polish:   ✅ enabled")
-    elif config.POLISH_ENABLED:
-        print("  LLM polish:   ⚠️  enabled in config but mlx-lm not installed")
-        print("                 Run: pip install mlx-lm")
-    else:
-        print("  LLM polish:   off")
     print(f"  History:      {'✅ enabled' if config.HISTORY_ENABLED else 'off'}")
     print(f"  Config:       {config.CONFIG_PATH}")
 
@@ -186,11 +178,6 @@ def _run_voiceclip():
     print("\n  Preloading Whisper model (first run downloads ~3 GB)...")
     preload_model()
     print("  ✅ Model ready")
-
-    if polish_available():
-        print("\n  Preloading LLM polish model...")
-        preload_polish_model()
-        print("  ✅ Polish model ready")
 
     print("\n  Microphones:")
     try:
