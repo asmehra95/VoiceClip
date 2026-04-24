@@ -189,7 +189,7 @@ Add a persona to the `personas` section of your config:
 ```json
 "personas": {
   "my-team": {
-    "prompt": "SIM, CR, oncall, Brazil, pip, Avtar, ",
+    "prompt": "SIM, CR, oncall, Brazil, pip, Avtar",
     "dictionary": {
       "sim": "SIM",
       "c r": "CR"
