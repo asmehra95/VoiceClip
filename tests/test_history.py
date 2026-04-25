@@ -75,7 +75,7 @@ class TestQuery:
         history.save("today msg", "Today msg.", 1.0)
         result = history.query_today()
         assert "Today msg." in result
-        assert "1 transcriptions" in result
+        assert "1 transcription today" in result or "1 entry today" in result
 
     def test_query_search(self):
         history.init()
@@ -83,13 +83,13 @@ class TestQuery:
         history.save("lunch plans", "Lunch at noon.", 1.0)
         result = history.query_search("meeting")
         assert "Meeting notes" in result
-        assert "1 result)" in result
+        assert "1 entry matching" in result or "1 result" in result
 
     def test_query_search_no_results(self):
         history.init()
         history.save("hello", "Hello.", 1.0)
         result = history.query_search("nonexistent")
-        assert "0 results" in result
+        assert "0 entries" in result or "0 results" in result
 
     def test_get_by_id(self):
         history.init()

@@ -196,3 +196,28 @@ def cleanup_sounds():
         for p in _beep_procs:
             if p.poll() is None:
                 p.terminate()
+
+
+# ---------------------------------------------------------------------------
+# Active app context — for history entries
+# ---------------------------------------------------------------------------
+
+def get_active_app_name() -> str:
+    """Return the localized name of the frontmost app, or 'unknown'.
+
+    Uses osascript so we don't take on a PyObjC dependency. Target latency
+    is a few milliseconds on a warm system. Never raises.
+    """
+    try:
+        result = subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to get name of first application process whose frontmost is true'],
+            capture_output=True, timeout=1,
+        )
+        if result.returncode == 0:
+            name = result.stdout.decode("utf-8", errors="replace").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return "unknown"

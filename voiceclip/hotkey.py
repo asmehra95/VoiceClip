@@ -1,8 +1,15 @@
-"""Global hotkey handler — configurable key and mode.
+"""Global hotkey handler — configurable key, mode, and profile.
 
 Supports two modes:
-- "hold": Hold key to record, release to stop and transcribe (default)
-- "toggle": Press once to start recording, press again to stop and transcribe
+- "hold": Hold key to record, release to stop and transcribe
+- "toggle": Press once to start recording, press again to stop
+
+Supports two profiles:
+- "transcription" (default): record → transcribe → paste + save to history
+- "reflection": record → transcribe → save to history ONLY (no clipboard, no paste)
+
+When both profiles are registered they share a module-level coordinator lock
+so the single Recorder child process can only serve one cycle at a time.
 
 Threading model:
 - pynput runs its own listener thread for key events
@@ -17,35 +24,55 @@ import time
 
 from pynput import keyboard
 
-from voiceclip.config import MIN_HOLD_SECONDS, HOTKEY_MODE, HISTORY_ENABLED, resolve_hotkey
+from voiceclip.config import MIN_HOLD_SECONDS, HISTORY_ENABLED
 from voiceclip.recorder import Recorder
 from voiceclip.transcriber import transcribe
 from voiceclip.formatter import format_text
 from voiceclip.macos import (
     copy_to_clipboard, copy_paste_and_restore, paste,
-    notify, beep,
+    notify, beep, get_active_app_name,
 )
 
 log = logging.getLogger(__name__)
 
 
-class HotkeyHandler:
-    """Manages the hotkey lifecycle for both hold and toggle modes.
+# Module-level coordinator lock: shared across ALL HotkeyHandler instances.
+# Ensures the single Recorder is never asked to serve two concurrent cycles.
+_RECORDING_GATE = threading.Lock()
 
-    Ensures only one record/transcribe cycle runs at a time and
-    handles all error cases gracefully. All state flags are protected
-    by a lock to prevent races between pynput and worker threads.
+
+class HotkeyHandler:
+    """Manages a single hotkey's lifecycle (hold or toggle mode, any profile).
+
+    Multiple instances can coexist — they coordinate via the module-level
+    `_RECORDING_GATE` lock so only one cycle runs at a time.
     """
 
-    def __init__(self, recorder: Recorder):
+    def __init__(
+        self,
+        recorder: Recorder,
+        *,
+        hotkey,
+        mode: str = "hold",
+        profile: str = "transcription",
+        start_sound: str = "Tink",
+        done_sound: str = "Glass",
+        label: str = "VoiceClip",
+    ):
         self._recorder = recorder
+        self._hotkey = hotkey
+        self._mode = mode
+        self._profile = profile
+        self._start_sound = start_sound
+        self._done_sound = done_sound
+        self._label = label
+
         self._lock = threading.Lock()
         self._active = False       # True while recording is active
         self._press_time = 0.0
         self._busy = False         # True while a transcribe cycle is running
         self._listener = None
-        self._hotkey = resolve_hotkey()
-        self._mode = HOTKEY_MODE   # "hold" or "toggle"
+        self._captured_app: str | None = None  # set at recording start
 
     def start(self):
         """Start listening for the hotkey."""
@@ -54,7 +81,10 @@ class HotkeyHandler:
             on_release=self._on_release,
         )
         self._listener.start()
-        log.info("Hotkey listener started (mode=%s)", self._mode)
+        log.info(
+            "Hotkey listener started (profile=%s, mode=%s)",
+            self._profile, self._mode,
+        )
 
     def stop(self):
         """Stop listening."""
@@ -62,7 +92,6 @@ class HotkeyHandler:
             self._listener.stop()
 
     def _key_matches(self, key) -> bool:
-        """Check if the pressed/released key matches our configured hotkey."""
         return key == self._hotkey
 
     # ------------------------------------------------------------------
@@ -79,47 +108,45 @@ class HotkeyHandler:
             self._handle_hold_press()
 
     def _handle_hold_press(self):
-        """Hold mode: start recording on press."""
         with self._lock:
             if self._active or self._busy:
+                return
+            # Try to claim the shared recorder. If another handler is busy,
+            # silently ignore the press.
+            if not _RECORDING_GATE.acquire(blocking=False):
+                log.info("Recorder busy with another profile; press ignored")
                 return
             self._active = True
             self._press_time = time.time()
 
-        threading.Thread(
-            target=self._start_recording,
-            daemon=True,
-        ).start()
+        threading.Thread(target=self._start_recording, daemon=True).start()
 
     def _handle_toggle_press(self):
-        """Toggle mode: press once to start, press again to stop."""
+        stopped = False
+        hold_time = 0.0
+
         with self._lock:
             if self._busy:
                 return
 
             if not self._active:
-                # Start recording
+                if not _RECORDING_GATE.acquire(blocking=False):
+                    log.info("Recorder busy with another profile; press ignored")
+                    return
                 self._active = True
                 self._press_time = time.time()
-                threading.Thread(
-                    target=self._start_recording,
-                    daemon=True,
-                ).start()
+                threading.Thread(target=self._start_recording, daemon=True).start()
             else:
-                # Stop recording
                 self._active = False
                 hold_time = time.time() - self._press_time
+                stopped = True
 
-        # If we just stopped, process the recording
-        if not self._active and hold_time > 0:
+        if stopped and hold_time > 0:
             log.info("Recording stopped (%.1fs), transcribing...", hold_time)
             beep("Pop")
             with self._lock:
                 self._busy = True
-            threading.Thread(
-                target=self._stop_and_transcribe,
-                daemon=True,
-            ).start()
+            threading.Thread(target=self._stop_and_transcribe, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Release handler
@@ -128,22 +155,20 @@ class HotkeyHandler:
     def _on_release(self, key):
         if not self._key_matches(key):
             return
-
-        # Toggle mode handles everything in _on_press
         if self._mode == "toggle":
             return
 
-        # Hold mode: stop recording on release
         with self._lock:
             if not self._active:
                 return
             self._active = False
             hold_time = time.time() - self._press_time
 
-        # Ignore accidental taps
         if hold_time < MIN_HOLD_SECONDS:
             log.info("Tap too short (%.1fs), ignoring", hold_time)
             self._discard_recording()
+            # Release the coordinator gate since we never finish a cycle
+            self._release_gate()
             return
 
         log.info("Recording stopped (%.1fs), transcribing...", hold_time)
@@ -152,39 +177,47 @@ class HotkeyHandler:
         with self._lock:
             self._busy = True
 
-        threading.Thread(
-            target=self._stop_and_transcribe,
-            daemon=True,
-        ).start()
+        threading.Thread(target=self._stop_and_transcribe, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Recording lifecycle
     # ------------------------------------------------------------------
 
     def _start_recording(self):
-        """Start the recorder and play the start sound. Runs in a worker thread."""
+        """Start the recorder, capture context, play start sound."""
         try:
             self._recorder.begin()
         except RuntimeError as e:
             log.error("Failed to start recording: %s", e)
             with self._lock:
                 self._active = False
+            self._release_gate()
             self._try_restart_recorder()
             return
 
-        beep("Tink")
-        log.info("Recording started")
+        # Capture active-app context for history (best-effort, never blocks > 1s).
+        # Only bothered when history is on — otherwise it's wasted work.
+        if HISTORY_ENABLED:
+            try:
+                self._captured_app = get_active_app_name()
+            except Exception:
+                self._captured_app = None
+        else:
+            self._captured_app = None
+
+        beep(self._start_sound)
+        log.info("Recording started (profile=%s)", self._profile)
 
     def _stop_and_transcribe(self):
-        """Stop recording, transcribe, copy+paste. Runs in a background thread."""
+        """Stop recording, transcribe, deliver result."""
         try:
             path = self._recorder.end()
             if not path:
                 log.warning("No audio captured")
-                notify("VoiceClip", "No audio captured")
+                notify(self._label, "No audio captured")
                 return
 
-            notify("VoiceClip", "🔄 Transcribing...")
+            notify(self._label, "🔄 Transcribing...")
 
             t0 = time.time()
             text = transcribe(path)
@@ -196,20 +229,10 @@ class HotkeyHandler:
                 text = format_text(text)
 
             if text:
-                # Save to history if enabled
-                if HISTORY_ENABLED:
-                    from voiceclip.history import save as save_history
-                    save_history(raw_text or "", text, elapsed)
-
-                copy_paste_and_restore(text)
-                beep("Glass")
-                preview = text[:150] + ("..." if len(text) > 150 else "")
-                log.info("Copied %d chars in %.1fs", len(text), elapsed)
-                log.info('Text: "%s"', preview)
-                notify("VoiceClip ✅", text[:100])
+                self._deliver(raw_text or "", text, elapsed)
             else:
                 log.warning("No speech detected")
-                notify("VoiceClip", "No speech detected")
+                notify(self._label, "No speech detected")
 
         except RuntimeError as e:
             log.error("Recorder error: %s", e)
@@ -219,6 +242,43 @@ class HotkeyHandler:
         finally:
             with self._lock:
                 self._busy = False
+            self._release_gate()
+
+    def _deliver(self, raw_text: str, text: str, elapsed: float):
+        """Profile-specific delivery: paste-and-save vs save-only."""
+        app_name = self._captured_app
+        self._captured_app = None  # reset
+
+        if self._profile == "reflection":
+            # Save-only. No clipboard write, no paste, no clipboard restore.
+            if HISTORY_ENABLED:
+                from voiceclip.history import save as save_history
+                save_history(
+                    raw_text, text, elapsed,
+                    kind="reflection",
+                    app_name=app_name,
+                )
+            beep(self._done_sound)
+            preview = text[:50] + ("..." if len(text) > 50 else "")
+            log.info("Reflection saved (%d chars, %.1fs): %r", len(text), elapsed, preview)
+            # Do NOT include text in the notification — reflections are private.
+            notify(f"{self._label} ✍️", "Reflection saved")
+            return
+
+        # Default: transcription profile.
+        if HISTORY_ENABLED:
+            from voiceclip.history import save as save_history
+            save_history(
+                raw_text, text, elapsed,
+                kind="transcription",
+                app_name=app_name,
+            )
+        copy_paste_and_restore(text)
+        beep(self._done_sound)
+        preview = text[:150] + ("..." if len(text) > 150 else "")
+        log.info("Copied %d chars in %.1fs", len(text), elapsed)
+        log.info('Text: "%s"', preview)
+        notify(f"{self._label} ✅", text[:100])
 
     def _discard_recording(self):
         """Clean up a too-short recording in the background."""
@@ -229,11 +289,18 @@ class HotkeyHandler:
                 pass
         threading.Thread(target=_do, daemon=True).start()
 
+    def _release_gate(self):
+        """Release the shared recorder lock if we hold it."""
+        try:
+            _RECORDING_GATE.release()
+        except RuntimeError:
+            # Not held — safe to ignore
+            pass
+
     def _try_restart_recorder(self):
-        """Attempt to restart the recorder after a failure."""
         try:
             self._recorder.restart()
             log.info("Recorder restarted successfully")
         except Exception as e:
             log.error("Failed to restart recorder: %s", e)
-            notify("VoiceClip ❌", "Recorder crashed. Restart VoiceClip.")
+            notify(f"{self._label} ❌", "Recorder crashed. Restart VoiceClip.")

@@ -8,6 +8,17 @@
   "hotkey_mode": "hold",
   "history": false,
   "history_max_days": 30,
+  "reflection_hotkey": null,
+  "reflection_hotkey_mode": "hold",
+  "reflection_max_days": 0,
+
+  "summaries": {
+    "provider": "none",
+    "local_model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+    "openai_model": "gpt-4o-mini",
+    "anthropic_model": "claude-haiku-4-5",
+    "style": "descriptive"
+  },
 
   "personas": {
     "default": {

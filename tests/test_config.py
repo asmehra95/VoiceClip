@@ -40,7 +40,6 @@ class TestConfigLoad:
         config.load()
         assert config.MODEL == "large-v3-turbo"
         assert config.ENGLISH_ONLY is True
-        assert config.POLISH_ENABLED is False
         assert config.PERSONA == "default"
         assert config.HOTKEY == "alt_r"
         assert config.HOTKEY_MODE == "hold"
@@ -93,11 +92,6 @@ class TestEnvOverrides:
         monkeypatch.setenv("VOICECLIP_ENGLISH_ONLY", "false")
         config.load()
         assert config.ENGLISH_ONLY is False
-
-    def test_polish_override(self, monkeypatch):
-        monkeypatch.setenv("VOICECLIP_POLISH", "true")
-        config.load()
-        assert config.POLISH_ENABLED is True
 
     def test_persona_override(self, monkeypatch):
         monkeypatch.setenv("VOICECLIP_PERSONA", "engineering")

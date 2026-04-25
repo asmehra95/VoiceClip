@@ -262,9 +262,130 @@ Whisper auto-detects the language. Works best with `large-v3-turbo` or `large-v3
 
 ---
 
-## Troubleshooting
+## Reflections (opt-in)
 
-**Most common issues:**
+Want to capture a thought without pasting it anywhere? Set up a second hotkey for reflections. Same record → speak → release flow, but the text is saved privately to your local history and **never** touches the clipboard or pastes into any app.
+
+### Enable it
+
+Two things in `~/.voiceclip/config.json`:
+
+```json
+{
+  "history": true,
+  "reflection_hotkey": "f6"
+}
+```
+
+That's it. Pick any key that's different from your main hotkey (see [Hotkey](#hotkey) for supported keys). Restart VoiceClip.
+
+### How it feels
+
+- **Hold your main key (⌥)** — normal dictation, pastes where your cursor is
+- **Hold your reflection key (F6)** — different start chime, different done chime; your words are saved but nothing is pasted
+
+The chime difference matters — it tells you at a glance which mode fired.
+
+### Browse what you've captured
+
+```bash
+voiceclip history                           # Everything, most recent first
+voiceclip history --reflections             # Only reflections
+voiceclip history --transcriptions          # Only dictations
+voiceclip history --reflections --today     # Today's reflections
+voiceclip history --search "idea"           # Keyword search
+voiceclip history --reflect-last            # Oh wait, that dictation was actually a reflection
+```
+
+### What gets stored
+
+For every entry (dictation or reflection):
+- Timestamp, duration, the text itself
+- The app you were in (e.g. "Slack", "Xcode") — no permission needed for this, it's public info
+
+That's it. No audio is ever kept, no window titles, no URLs, no screen contents. Database lives at `~/.voiceclip/history.db`, readable only by you (chmod 600).
+
+### Retention
+
+- Transcriptions age out after `history_max_days` (default 30)
+- Reflections are **kept forever** unless you set `reflection_max_days` to a positive number
+- Turning history off never deletes anything — your entries sit there until you run `voiceclip history --clear`
+
+### Kind-scoped clearing
+
+```bash
+voiceclip history --clear --transcriptions  # Wipe dictations, keep reflections
+voiceclip history --clear --reflections     # Wipe reflections, keep dictations
+voiceclip history --clear                   # Wipe everything (with confirmation)
+```
+
+---
+
+## Web viewer (opt-in)
+
+Prefer to browse your day in a real UI? Turn on history, then:
+
+```bash
+voiceclip view
+```
+
+A lightweight local web page opens in your browser at `http://localhost:8723`. It binds to localhost only — nothing is ever exposed to your network.
+
+### What you see
+
+- **Today by default.** Big header, day navigation (← Yesterday · Today · Next →), date picker.
+- **Where your voice went.** A small bar chart of which apps you dictated in today.
+- **Reflections first.** Your 💭 entries get pride of place — generous type, warm background.
+- **Transcriptions collapsed.** "Show N transcriptions" toggle — they're secondary, available when you want context.
+- **One click to copy** any entry. One click to promote a past dictation to a reflection.
+- **Dark mode follows your system.** No toggle, no setting.
+
+### Daily summary (opt-in, costs-nothing edition)
+
+At the end of a day, an LLM can read your dictations and reflections and write you a short summary — "today you spent most of your voice on Slack and Notes, kept circling back to the history feature, and had four reflections about start-small product decisions."
+
+Off by default. Enable in config:
+
+```json
+{
+  "summaries": {
+    "provider": "local",
+    "local_model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+    "style": "descriptive"
+  }
+}
+```
+
+Three provider options:
+
+| Provider | Where it runs | Needs | Best for |
+|---|---|---|---|
+| `local` | Your Mac (via mlx-lm) | `pip install mlx-lm`, ~4GB model download | Privacy, free, offline |
+| `openai` | OpenAI API | `OPENAI_API_KEY` env, `pip install openai` | Quality |
+| `anthropic` | Anthropic API | `ANTHROPIC_API_KEY` env, `pip install anthropic` | Quality |
+
+**Cloud providers send your day's entries to the provider.** That's the only feature in VoiceClip that touches the network, and only when you explicitly opt in. A warning appears at startup if a cloud provider is configured.
+
+Recommended local models (bigger = slower but better — you're only running this once a day):
+
+- `mlx-community/Qwen2.5-7B-Instruct-4bit` — default, ~4GB RAM, ~15s per day
+- `mlx-community/Qwen2.5-14B-Instruct-4bit` — better, ~8GB RAM, ~30s per day
+- `mlx-community/Llama-3.2-3B-Instruct-4bit` — leanest, ~2GB RAM
+
+Generate from the CLI:
+
+```bash
+voiceclip summarize --day today
+voiceclip summarize --day yesterday
+voiceclip summarize --day 2026-04-23
+voiceclip summarize --day today --force    # Regenerate even if cached
+```
+
+Or just open the viewer — today's page shows a "Generate" button that calls the same thing. Past days are cached forever; today regenerates when new entries arrive.
+
+---
+
+## Troubleshooting
 
 | Problem | Solution |
 |---|---|
@@ -293,7 +414,7 @@ voiceclip/
     config.py         # Config loader (JSON + env overrides)
     recorder.py       # Audio capture (separate process)
     transcriber.py    # Whisper inference on GPU
-    formatter.py      # Text cleanup and dictionary
+    formatter.py      # Text cleanup and dictionaryands
     polisher.py       # Optional AI grammar polish
     hotkey.py         # Hotkey handler (hold + toggle modes)
     macos.py          # Clipboard, paste, sounds, permissions

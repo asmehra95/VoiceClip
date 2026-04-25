@@ -117,6 +117,20 @@ HOTKEY_MODE = "hold"  # "hold" = hold-to-record, "toggle" = press-to-start/press
 HISTORY_ENABLED = False
 HISTORY_MAX_DAYS = 30
 
+# Reflections — second hotkey that saves a private note to history without pasting.
+# Off unless REFLECTION_HOTKEY is set in config or env.
+REFLECTION_HOTKEY: str | None = None
+REFLECTION_HOTKEY_MODE = "hold"
+REFLECTION_MAX_DAYS = 0  # 0 = never auto-delete reflections
+
+# Summaries — LLM-generated daily recaps. Off ("none") by default.
+# Provider: "none" | "local" | "openai" | "anthropic"
+SUMMARIES_PROVIDER = "none"
+SUMMARIES_LOCAL_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+SUMMARIES_OPENAI_MODEL = "gpt-4o-mini"
+SUMMARIES_ANTHROPIC_MODEL = "claude-haiku-4-5"
+SUMMARIES_STYLE = "descriptive"  # "descriptive" | "reflective"
+
 # Populated by load() — the merged dictionary (global + persona)
 DICTIONARY: dict[str, str] = {}
 
@@ -152,6 +166,9 @@ def load():
     """
     global MODEL, ENGLISH_ONLY, PERSONA, DICTIONARY, INITIAL_PROMPT
     global HOTKEY, HOTKEY_MODE, HISTORY_ENABLED, HISTORY_MAX_DAYS, _raw
+    global REFLECTION_HOTKEY, REFLECTION_HOTKEY_MODE, REFLECTION_MAX_DAYS
+    global SUMMARIES_PROVIDER, SUMMARIES_LOCAL_MODEL
+    global SUMMARIES_OPENAI_MODEL, SUMMARIES_ANTHROPIC_MODEL, SUMMARIES_STYLE
 
     _ensure_config_file()
 
@@ -205,6 +222,55 @@ def load():
         HISTORY_MAX_DAYS = 30
     if HISTORY_MAX_DAYS < 0:
         HISTORY_MAX_DAYS = 30
+
+    # Reflection hotkey — optional, only active when set
+    REFLECTION_HOTKEY = os.environ.get(
+        "VOICECLIP_REFLECTION_HOTKEY",
+        cfg.get("reflection_hotkey") or None,
+    )
+    if REFLECTION_HOTKEY is not None and not str(REFLECTION_HOTKEY).strip():
+        REFLECTION_HOTKEY = None
+    REFLECTION_HOTKEY_MODE = os.environ.get(
+        "VOICECLIP_REFLECTION_HOTKEY_MODE",
+        cfg.get("reflection_hotkey_mode", "hold"),
+    )
+    if REFLECTION_HOTKEY_MODE not in ("hold", "toggle"):
+        log.warning("Invalid reflection_hotkey_mode '%s', using 'hold'", REFLECTION_HOTKEY_MODE)
+        REFLECTION_HOTKEY_MODE = "hold"
+    try:
+        REFLECTION_MAX_DAYS = int(cfg.get("reflection_max_days", 0))
+    except (ValueError, TypeError):
+        REFLECTION_MAX_DAYS = 0
+    if REFLECTION_MAX_DAYS < 0:
+        REFLECTION_MAX_DAYS = 0
+
+    # Summaries (nested block)
+    summaries_cfg = cfg.get("summaries", {})
+    if not isinstance(summaries_cfg, dict):
+        summaries_cfg = {}
+    SUMMARIES_PROVIDER = os.environ.get(
+        "VOICECLIP_SUMMARIES_PROVIDER",
+        summaries_cfg.get("provider", "none"),
+    )
+    if SUMMARIES_PROVIDER not in ("none", "local", "openai", "anthropic"):
+        log.warning("Invalid summaries.provider '%s', using 'none'", SUMMARIES_PROVIDER)
+        SUMMARIES_PROVIDER = "none"
+    SUMMARIES_LOCAL_MODEL = os.environ.get(
+        "VOICECLIP_SUMMARIES_LOCAL_MODEL",
+        summaries_cfg.get("local_model", "mlx-community/Qwen2.5-7B-Instruct-4bit"),
+    )
+    SUMMARIES_OPENAI_MODEL = os.environ.get(
+        "VOICECLIP_SUMMARIES_OPENAI_MODEL",
+        summaries_cfg.get("openai_model", "gpt-4o-mini"),
+    )
+    SUMMARIES_ANTHROPIC_MODEL = os.environ.get(
+        "VOICECLIP_SUMMARIES_ANTHROPIC_MODEL",
+        summaries_cfg.get("anthropic_model", "claude-haiku-4-5"),
+    )
+    SUMMARIES_STYLE = summaries_cfg.get("style", "descriptive")
+    if SUMMARIES_STYLE not in ("descriptive", "reflective"):
+        log.warning("Invalid summaries.style '%s', using 'descriptive'", SUMMARIES_STYLE)
+        SUMMARIES_STYLE = "descriptive"
 
     # Resolve persona
     personas = cfg.get("personas", {})
@@ -289,18 +355,20 @@ _KEY_MAP = {
 }
 
 
-def resolve_hotkey():
-    """Resolve the HOTKEY config string to a pynput key object.
+def resolve_hotkey(key_str: str | None = None):
+    """Resolve a hotkey config string to a pynput key object.
 
+    If key_str is None, uses the module-level HOTKEY (transcription hotkey).
     Returns a pynput Key enum member or a KeyCode for character keys.
     """
     from pynput import keyboard
 
-    key_str = HOTKEY.lower().strip()
+    source = key_str if key_str is not None else HOTKEY
+    ks = source.lower().strip()
 
     # Check named keys
-    if key_str in _KEY_MAP:
-        attr_path = _KEY_MAP[key_str]
+    if ks in _KEY_MAP:
+        attr_path = _KEY_MAP[ks]
         # e.g. "Key.alt_r" → keyboard.Key.alt_r
         parts = attr_path.split(".")
         obj = keyboard
@@ -309,19 +377,20 @@ def resolve_hotkey():
         return obj
 
     # Single character key (e.g., "z", "x")
-    if len(key_str) == 1:
-        return keyboard.KeyCode.from_char(key_str)
+    if len(ks) == 1:
+        return keyboard.KeyCode.from_char(ks)
 
     # Try as a pynput Key attribute directly
     try:
-        return getattr(keyboard.Key, key_str)
+        return getattr(keyboard.Key, ks)
     except AttributeError:
-        log.warning("Unknown hotkey '%s', falling back to Right Option", HOTKEY)
+        log.warning("Unknown hotkey '%s', falling back to Right Option", source)
         return keyboard.Key.alt_r
 
 
-def hotkey_display_name() -> str:
-    """Return a human-readable name for the configured hotkey."""
+def hotkey_display_name(key_str: str | None = None) -> str:
+    """Return a human-readable name for a configured hotkey."""
+    source = key_str if key_str is not None else HOTKEY
     names = {
         "alt_r": "Right Option (⌥)",
         "alt_l": "Left Option (⌥)",
@@ -338,4 +407,4 @@ def hotkey_display_name() -> str:
         "space": "Space",
         "esc": "Escape",
     }
-    return names.get(HOTKEY.lower().strip(), HOTKEY)
+    return names.get(source.lower().strip(), source)
