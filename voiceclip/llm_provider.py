@@ -124,7 +124,12 @@ def complete_openai(
 
     Set json_mode=True to force JSON-structured output (patterns feature uses
     this; summarizer does not).
+
+    Note: `max_tokens` is accepted for backward compatibility but not sent to
+    the API. Newer reasoning models (GPT-5+, o-series) reject it, and letting
+    the server use its default keeps this code simple across model eras.
     """
+    del max_tokens  # no longer forwarded; see docstring
     client = _openai_client()
     kwargs: dict[str, Any] = {
         "model": model_id,
@@ -132,8 +137,6 @@ def complete_openai(
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "temperature": 0.4,
-        "max_tokens": max_tokens,
     }
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
