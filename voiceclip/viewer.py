@@ -301,7 +301,8 @@ class Handler(BaseHTTPRequestHandler):
                 window = payload.get("window_days")
                 if not isinstance(window, int) or window < 1:
                     window = None
-                result = generate_patterns(window_days=window)
+                force = bool(payload.get("force", False))
+                result = generate_patterns(window_days=window, force=force)
                 self._json({"ok": True, "patterns": result})
             except RuntimeError as e:
                 log.warning("Patterns failed: %s", e)
@@ -1627,7 +1628,7 @@ _PAGE_HTML = r"""<!doctype html>
       const r = await fetch("/api/patterns/run", {
         method: "POST",
         headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({}),
+        body: JSON.stringify({force: true}),
       });
       const data = await r.json();
       if (!r.ok) {

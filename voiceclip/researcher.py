@@ -1,9 +1,9 @@
-"""Research assistant — takes a topic you captured, produces a brief.
+"""Research assistant — produces a scannable brief for a queued topic.
 
-Uses cloud providers only (OpenAI or Anthropic). Both support a web search
-tool the model decides whether to call based on the question. Conceptual
-questions stay cheap; specific or current questions auto-upgrade to
-web-searched answers with sources.
+Uses cloud providers only. Both OpenAI and Anthropic support a server-side
+web search tool; the model decides per-topic whether to call it. Conceptual
+questions stay cheap; specific or current questions auto-upgrade to searched
+answers with sources.
 
 Off by default. Enable in config.json:
 
@@ -13,19 +13,19 @@ Off by default. Enable in config.json:
         "anthropic_model": "claude-haiku-4-5"
     }
 
-API keys come from env only: OPENAI_API_KEY, ANTHROPIC_API_KEY.
+Transport is handled by voiceclip.llm_provider. This module is prompt +
+persistence only.
 
-This feature sends the topic string (and nothing else about your history)
-to the chosen provider. It is the only feature in VoiceClip that uses the
-network, and only when you explicitly trigger a research.
+This is the one feature that always uses the network when enabled. The
+topic string is sent to the chosen provider; if the model uses web search,
+that topic is also sent to the provider's search backend.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 
-from voiceclip import config, history
+from voiceclip import config, history, llm_provider
 
 log = logging.getLogger(__name__)
 
@@ -57,157 +57,20 @@ Rules:
 
 
 # ---------------------------------------------------------------------------
-# OpenAI
-# ---------------------------------------------------------------------------
-
-def _research_openai(topic: str, model_id: str) -> tuple[str, list, bool]:
-    """Return (brief_text, sources, used_web_search)."""
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY is not set. Export it in your shell and restart voiceclip view."
-        )
-    try:
-        from openai import OpenAI
-    except ImportError:
-        raise RuntimeError(
-            "The 'openai' package is not installed. Install it with:\n"
-            "    ~/.voiceclip/.venv/bin/pip install openai"
-        )
-
-    client = OpenAI(api_key=api_key)
-
-    # Use the Responses API with the web_search tool. The model decides
-    # whether to call it. We prefer Responses because the tool surface is
-    # cleaner than Chat Completions + tool_choice plumbing.
-    try:
-        resp = client.responses.create(
-            model=model_id,
-            tools=[{"type": "web_search"}],
-            input=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": topic},
-            ],
-        )
-    except Exception as e:
-        # Fall back: some OpenAI models don't support the web_search tool.
-        # Drop the tool and retry.
-        msg = str(e).lower()
-        if "web_search" in msg or "tool" in msg or "not supported" in msg:
-            log.info("web_search not supported by %s; falling back to plain call", model_id)
-            resp = client.responses.create(
-                model=model_id,
-                input=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": topic},
-                ],
-            )
-        else:
-            raise
-
-    # Extract final text + any citations / URLs.
-    text = getattr(resp, "output_text", None) or ""
-    used_web = False
-    sources: list[dict] = []
-    # Walk response items looking for web_search tool calls and URL citations.
-    output = getattr(resp, "output", None) or []
-    for item in output:
-        itype = getattr(item, "type", None)
-        if itype and "web_search" in itype:
-            used_web = True
-        content = getattr(item, "content", None) or []
-        for c in content:
-            annotations = getattr(c, "annotations", None) or []
-            for ann in annotations:
-                atype = getattr(ann, "type", "")
-                if "url_citation" in atype or "citation" in atype:
-                    url = getattr(ann, "url", None)
-                    title = getattr(ann, "title", None) or url
-                    if url:
-                        sources.append({"title": title or url, "url": url})
-    # Dedupe sources
-    seen = set()
-    deduped = []
-    for s in sources:
-        if s["url"] not in seen:
-            seen.add(s["url"])
-            deduped.append(s)
-    return text.strip(), deduped, used_web
-
-
-# ---------------------------------------------------------------------------
-# Anthropic
-# ---------------------------------------------------------------------------
-
-def _research_anthropic(topic: str, model_id: str) -> tuple[str, list, bool]:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set. Export it in your shell and restart voiceclip view."
-        )
-    try:
-        import anthropic
-    except ImportError:
-        raise RuntimeError(
-            "The 'anthropic' package is not installed. Install it with:\n"
-            "    ~/.voiceclip/.venv/bin/pip install anthropic"
-        )
-
-    client = anthropic.Anthropic(api_key=api_key)
-
-    # Anthropic's server-side web search tool. Model decides whether to use it.
-    try:
-        resp = client.messages.create(
-            model=model_id,
-            max_tokens=800,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": topic}],
-            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
-        )
-    except Exception as e:
-        msg = str(e).lower()
-        # Fall back if the tool isn't available for this model/plan
-        if "web_search" in msg or "tool" in msg or "unsupported" in msg:
-            log.info("web_search not supported by %s; falling back to plain call", model_id)
-            resp = client.messages.create(
-                model=model_id,
-                max_tokens=800,
-                system=_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": topic}],
-            )
-        else:
-            raise
-
-    text_parts: list[str] = []
-    sources: list[dict] = []
-    used_web = False
-    for block in resp.content:
-        btype = getattr(block, "type", None)
-        if btype == "text":
-            t = getattr(block, "text", "") or ""
-            if t:
-                text_parts.append(t)
-            # Citations live on text blocks
-            citations = getattr(block, "citations", None) or []
-            for cit in citations:
-                url = getattr(cit, "url", None)
-                title = getattr(cit, "title", None) or url
-                if url:
-                    sources.append({"title": title or url, "url": url})
-        elif btype == "server_tool_use" or "web_search" in (btype or ""):
-            used_web = True
-    seen = set()
-    deduped = []
-    for s in sources:
-        if s["url"] not in seen:
-            seen.add(s["url"])
-            deduped.append(s)
-    return "".join(text_parts).strip(), deduped, used_web
-
-
-# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
+def _run(provider: str, topic: str, model_id: str) -> tuple[str, list, bool]:
+    if provider == "openai":
+        return llm_provider.complete_openai_with_web_search(
+            system=_SYSTEM_PROMPT, user=topic, model_id=model_id,
+        )
+    if provider == "anthropic":
+        return llm_provider.complete_anthropic_with_web_search(
+            system=_SYSTEM_PROMPT, user=topic, model_id=model_id,
+        )
+    raise RuntimeError(f"unknown research provider: {provider}")
+
 
 def research_topic(entry_id: int) -> dict | None:
     """Generate a research brief for a topic entry. Stores in `research_briefs`.
@@ -227,21 +90,19 @@ def research_topic(entry_id: int) -> dict | None:
         return None
 
     # Mark as running so the UI can reflect it.
-    running_id = history.save_brief(entry_id, status="running", provider=provider)
+    history.save_brief(entry_id, status="running", provider=provider)
 
     if provider == "openai":
         model_id = config.RESEARCH_OPENAI_MODEL
-        fn = _research_openai
     elif provider == "anthropic":
         model_id = config.RESEARCH_ANTHROPIC_MODEL
-        fn = _research_anthropic
     else:
         history.save_brief(entry_id, status="failed", provider=provider,
                            error=f"unknown provider {provider}")
         return None
 
     try:
-        text, sources, used_web = fn(topic["text"], model_id)
+        text, sources, used_web = _run(provider, topic["text"], model_id)
     except RuntimeError:
         history.save_brief(entry_id, status="failed", provider=provider, model=model_id,
                            error="configuration error")
@@ -265,7 +126,6 @@ def research_topic(entry_id: int) -> dict | None:
 
 
 def network_warning() -> str | None:
-    """Return a human-readable warning if a cloud research provider is configured."""
     if config.RESEARCH_PROVIDER in ("openai", "anthropic"):
         return (
             f"Research: cloud provider '{config.RESEARCH_PROVIDER}' is enabled. "

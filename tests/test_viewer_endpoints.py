@@ -1,0 +1,155 @@
+"""Integration tests for the viewer HTTP endpoints.
+
+These spin up the real ThreadingHTTPServer against a temp DB and hit each
+endpoint via urllib. LLM providers are disabled (provider='none') so no
+network traffic; those endpoints are exercised for their disabled-guard
+responses only.
+"""
+
+import json
+import os
+import tempfile
+import threading
+import time
+import urllib.request
+import urllib.error
+from datetime import datetime
+from http.server import ThreadingHTTPServer
+
+import pytest
+
+from voiceclip import config, history
+from voiceclip.viewer import Handler
+
+
+@pytest.fixture
+def server(tmp_path, monkeypatch):
+    """Start a viewer server on a free port pointed at a temp DB."""
+    monkeypatch.setattr(history, "DB_PATH", str(tmp_path / "history.db"))
+    monkeypatch.setattr(history, "_conn", None)
+    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "CONFIG_PATH", str(tmp_path / "config.json"))
+    config.load()
+    history.init()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    time.sleep(0.05)
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        history.close()
+
+
+def _get(url):
+    return json.loads(urllib.request.urlopen(url).read())
+
+
+def _post(url, body):
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req)
+        return resp.getcode(), json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+class TestGetEndpoints:
+    def test_index_renders_html(self, server):
+        body = urllib.request.urlopen(server).read().decode()
+        assert "<title>VoiceClip journal</title>" in body
+
+    def test_days_empty(self, server):
+        r = _get(server + "/api/days")
+        assert r == {"days": []}
+
+    def test_day_empty(self, server):
+        today = datetime.now().strftime("%Y-%m-%d")
+        r = _get(f"{server}/api/day?date={today}")
+        assert r["entries"] == []
+        assert r["stats"]["transcriptions"] == 0
+
+    def test_day_rejects_bad_date(self, server):
+        try:
+            urllib.request.urlopen(f"{server}/api/day?date=nope")
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+
+    def test_queue_listing_shape(self, server):
+        r = _get(server + "/api/queue")
+        assert "topics" in r
+        assert "research_enabled" in r
+        assert r["research_enabled"] is False
+
+    def test_patterns_config_off_by_default(self, server):
+        r = _get(server + "/api/patterns/config")
+        assert r["enabled"] is False
+
+
+class TestPostEndpoints:
+    def test_update_roundtrip(self, server):
+        i = history.save("raw", "Original text.", 1.0)
+        code, r = _post(f"{server}/api/update", {"id": i, "text": "Edited text."})
+        assert code == 200
+        assert r["entry"]["text"] == "Edited text."
+
+    def test_update_rejects_empty(self, server):
+        i = history.save("raw", "Original.", 1.0)
+        code, r = _post(f"{server}/api/update", {"id": i, "text": "   "})
+        assert code == 400
+
+    def test_delete_flow(self, server):
+        i = history.save("raw", "Bye.", 1.0)
+        code, r = _post(f"{server}/api/delete", {"id": i})
+        assert code == 200
+        assert r["entry"]["id"] == i
+
+    def test_promote_flow(self, server):
+        i = history.save("raw", "Promote me.", 1.0, kind="transcription")
+        code, r = _post(f"{server}/api/promote", {"id": i})
+        assert code == 200
+
+    def test_research_create_and_dedup(self, server):
+        code, r = _post(
+            f"{server}/api/research/create",
+            {"text": "CRDTs vs OT"},
+        )
+        assert code == 200
+        first_id = r["id"]
+
+        # Same topic via the patterns/queue path should dedup
+        code, r2 = _post(
+            f"{server}/api/patterns/queue",
+            {"topic": "CRDTs vs OT", "reason": "from patterns"},
+        )
+        assert code == 200
+        assert r2["duplicate"] is True
+        assert r2["id"] == first_id
+
+    def test_research_run_disabled(self, server):
+        # Provider defaults to 'none'
+        code, r = _post(f"{server}/api/research/run", {"id": 1})
+        assert code == 400
+        assert "disabled" in r["error"].lower()
+
+    def test_patterns_run_disabled(self, server):
+        code, r = _post(f"{server}/api/patterns/run", {})
+        assert code == 400
+        assert "off" in r["error"].lower() or "provider" in r["error"].lower()
+
+    def test_summarize_run_disabled(self, server):
+        code, r = _post(f"{server}/api/summarize", {})
+        assert code == 400
+
+    def test_bad_payload(self, server):
+        code, r = _post(f"{server}/api/delete", {"id": "not-an-int"})
+        assert code == 400

@@ -4,7 +4,9 @@
 
 VoiceClip turns your voice into text anywhere on your Mac — Slack, email, docs, terminal, anywhere you can type. Hold a key, speak, let go.
 
-Everything runs locally on your Apple Silicon GPU (any Mac from 2021 or newer). No cloud, no subscription, no data leaves your laptop. Audio is deleted immediately after transcription.
+**Dictation runs locally** on your Apple Silicon GPU (any Mac from 2021 or newer). Your audio is deleted immediately after transcription, and the text never leaves your Mac.
+
+Optional AI features — daily summaries, research briefs, pattern detection — can be configured to run locally or via cloud APIs (OpenAI, Anthropic). All are off by default. See [Privacy & data flow](#privacy--data-flow) before turning any of them on.
 
 ---
 
@@ -37,10 +39,10 @@ Works in any app. Your clipboard stays untouched.
 
 | | VoiceClip | Cloud tools (Otter, etc.) |
 |---|---|---|
-| **Privacy** | 100% local — nothing leaves your Mac | Audio sent to servers |
+| **Dictation privacy** | 100% local — audio and text stay on your Mac | Audio sent to servers |
 | **Latency** | 2-3 seconds | 5-10 seconds |
-| **Cost** | Free, forever | $10-20/month |
-| **Works offline** | Yes | No |
+| **Cost** | Free; cloud AI features are opt-in and pay-per-use | $10-20/month |
+| **Works offline** | Dictation yes, cloud AI features no | No |
 | **Setup** | One command | Account, browser, extensions |
 
 ---
@@ -382,6 +384,53 @@ voiceclip summarize --day today --force    # Regenerate even if cached
 ```
 
 Or just open the viewer — today's page shows a "Generate" button that calls the same thing. Past days are cached forever; today regenerates when new entries arrive.
+
+---
+
+## Privacy & data flow
+
+VoiceClip is built to be transparent about what crosses the network. Here is the complete picture:
+
+### Always local (never leaves your Mac)
+- **Audio capture and transcription.** Whisper runs on your Apple Silicon GPU. The audio WAV is deleted from `/tmp` immediately after transcription.
+- **Clipboard and paste.** `pbcopy` + simulated Cmd-V are local.
+- **History database.** SQLite file at `~/.voiceclip/history.db`, permissions `0600`, never synced, never transmitted.
+- **Active-app context capture** (when you enable history). Uses `osascript` to read the frontmost app name. Nothing beyond the name is captured.
+
+### Opt-in local (runs on your Mac if enabled)
+- **Grammar polish** (`polish = true`) — uses `mlx-lm` locally.
+- **Daily summaries** with `summaries.provider = "local"` — uses `mlx-lm` locally.
+- **Patterns coach** with `patterns.provider = "local"` — uses `mlx-lm` locally. **This is the default for Patterns** because it reads the widest window of your history.
+
+### Opt-in cloud (sends your data to a third-party API)
+
+These features are all `provider = "none"` by default. If you change any of them to `openai` or `anthropic`, the following data will be sent off your Mac to that provider:
+
+| Feature | What is sent |
+|---|---|
+| **Summaries** (`summaries.provider`) | Every entry (transcription + reflection) for the target day |
+| **Research** (`research.provider`) | The research topic you typed or dictated (text only). If the model uses its web-search tool, that topic is also sent to a search index (Bing for OpenAI, Anthropic's integration for Anthropic). |
+| **Patterns** (`patterns.provider`) | Up to 7 days of reflections and cached daily summaries in a single prompt |
+
+API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are read from environment variables only. They are never stored in `config.json`, logs, or the database.
+
+**Cloud provider retention:** OpenAI and Anthropic cache API requests for abuse detection (typically around 30 days). Your reflections, topics, or summaries may sit on their servers for that window before being deleted. Review each provider's data-use policy before enabling.
+
+### What is NOT captured anywhere
+- Window titles (off by default; requires explicit opt-in)
+- Browser URLs
+- Calendar events
+- Screen contents
+- Keystrokes outside the hotkey
+- Telemetry or analytics of any kind — VoiceClip never phones home
+
+### Uninstall
+To remove everything:
+```bash
+rm -rf ~/.voiceclip ~/.local/bin/voiceclip
+# Also clears cached AI models (can be 3-10 GB):
+rm -rf ~/.cache/huggingface
+```
 
 ---
 
