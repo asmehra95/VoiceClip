@@ -92,7 +92,8 @@ def _summarize_local(system: str, user: str, model_id: str) -> str:
         from mlx_lm import load, generate
     except ImportError:
         raise RuntimeError(
-            "Local summaries require mlx-lm. Install with: pip install mlx-lm"
+            "mlx-lm is not installed. Install it with:\n"
+            "    ~/.voiceclip/.venv/bin/pip install mlx-lm"
         )
 
     log.info("Loading local model: %s (first run downloads the weights)", model_id)
@@ -126,8 +127,8 @@ def _summarize_openai(system: str, user: str, model_id: str) -> str:
         from openai import OpenAI
     except ImportError:
         raise RuntimeError(
-            "OpenAI summaries require the 'openai' package. "
-            "Install with: pip install openai"
+            "The 'openai' package is not installed. Install it with:\n"
+            "    ~/.voiceclip/.venv/bin/pip install openai"
         )
     client = OpenAI(api_key=api_key)
     resp = client.chat.completions.create(
@@ -153,8 +154,8 @@ def _summarize_anthropic(system: str, user: str, model_id: str) -> str:
         import anthropic
     except ImportError:
         raise RuntimeError(
-            "Anthropic summaries require the 'anthropic' package. "
-            "Install with: pip install anthropic"
+            "The 'anthropic' package is not installed. Install it with:\n"
+            "    ~/.voiceclip/.venv/bin/pip install anthropic"
         )
     client = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(

@@ -373,6 +373,36 @@ def get_entry_full(entry_id: int) -> dict | None:
     }
 
 
+def delete_entry(entry_id: int) -> dict | None:
+    """Delete a single entry by ID. Returns the deleted row's summary on success.
+
+    Used by the web viewer's per-entry delete button. This bypasses the
+    interactive confirmation used by clear_all/clear_kind because the UI
+    does its own two-step confirm.
+    """
+    if _conn is None:
+        return None
+    existing = _conn.execute(
+        "SELECT id, timestamp, formatted_text, kind FROM transcriptions WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not existing:
+        return None
+    with _write_lock:
+        try:
+            _conn.execute("DELETE FROM transcriptions WHERE id = ?", (entry_id,))
+            _conn.commit()
+        except Exception as e:
+            log.warning("Failed to delete entry %s: %s", entry_id, e)
+            return None
+    return {
+        "id": existing[0],
+        "timestamp": existing[1],
+        "text": existing[2],
+        "kind": existing[3],
+    }
+
+
 def promote_to_reflection(entry_id: int | None = None, last: bool = False) -> dict | None:
     """Promote a past transcription to a reflection.
 

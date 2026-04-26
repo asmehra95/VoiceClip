@@ -76,6 +76,16 @@ def _day_payload(date_str: str, include_summary: bool = True) -> dict:
         if cached:
             summary_block = cached
 
+    # Resolve the currently-active model id for the configured provider.
+    # Shown on the "Generate" card so the user knows what's about to run.
+    active_model = None
+    if config.SUMMARIES_PROVIDER == "local":
+        active_model = config.SUMMARIES_LOCAL_MODEL
+    elif config.SUMMARIES_PROVIDER == "openai":
+        active_model = config.SUMMARIES_OPENAI_MODEL
+    elif config.SUMMARIES_PROVIDER == "anthropic":
+        active_model = config.SUMMARIES_ANTHROPIC_MODEL
+
     return {
         "date": date_str,
         "day_label": _friendly_day_label(date_str),
@@ -86,6 +96,7 @@ def _day_payload(date_str: str, include_summary: bool = True) -> dict:
         "summary": summary_block,
         "summary_enabled": config.SUMMARIES_PROVIDER != "none",
         "summary_provider": config.SUMMARIES_PROVIDER,
+        "summary_model": active_model,
         "summary_error": summary_error,
     }
 
@@ -174,6 +185,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "entry": result})
             return
 
+        if path == "/api/delete":
+            entry_id = payload.get("id")
+            if not isinstance(entry_id, int):
+                self._json({"error": "bad id"}, status=400)
+                return
+            result = history.delete_entry(entry_id)
+            if result is None:
+                self._json({"error": "not found"}, status=404)
+            else:
+                self._json({"ok": True, "entry": result})
+            return
+
         if path == "/api/summarize":
             date = payload.get("date") or datetime.now().strftime("%Y-%m-%d")
             force = bool(payload.get("force", False))
@@ -192,9 +215,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": "no entries for that day"}, status=404)
                 else:
                     self._json({"ok": True, "summary": result})
+            except RuntimeError as e:
+                # Expected failures (missing deps, missing API keys, bad config).
+                # Log a single warning line — no stack trace — and return the
+                # message so the UI can show a friendly hint.
+                log.warning("Summarize failed: %s", e)
+                self._json({"error": str(e)}, status=400)
             except Exception as e:
-                log.exception("Summarize failed")
-                self._json({"error": str(e)}, status=500)
+                # Actually unexpected — full traceback is fair.
+                log.exception("Summarize crashed")
+                self._json({"error": f"internal error: {e}"}, status=500)
             return
 
         self._not_found()
@@ -422,6 +452,24 @@ _PAGE_HTML = r"""<!doctype html>
     font-size: 13px;
     cursor: pointer;
   }
+  code.inline {
+    background: var(--bar);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .generate .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    margin-right: 8px;
+    border: 2px solid var(--bar);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   section.entries h3 {
     font-size: 12px;
@@ -433,6 +481,16 @@ _PAGE_HTML = r"""<!doctype html>
   }
   .entry {
     margin: 14px 0 22px;
+    transition: opacity 0.35s ease, transform 0.35s ease, max-height 0.35s ease, margin 0.35s ease, padding 0.35s ease;
+    overflow: hidden;
+  }
+  .entry.removing {
+    opacity: 0;
+    transform: translateX(-12px);
+    max-height: 0;
+    margin: 0;
+    padding-top: 0;
+    padding-bottom: 0;
   }
   .entry.reflection {
     background: var(--reflection-bg);
@@ -471,6 +529,12 @@ _PAGE_HTML = r"""<!doctype html>
   }
   .entry .actions button:hover { color: var(--text); border-color: var(--muted); }
   .entry .actions .flash { color: var(--accent); border-color: var(--accent); }
+  .entry .actions .danger:hover { color: #c44; border-color: #c44; }
+  .entry .actions .armed {
+    color: white !important;
+    background: #c44;
+    border-color: #c44;
+  }
 
   details.transcriptions summary {
     cursor: pointer;
@@ -578,18 +642,35 @@ _PAGE_HTML = r"""<!doctype html>
     // Summary
     const summarySlot = document.getElementById("summary_slot");
     summarySlot.innerHTML = "";
-    if (data.summary_enabled && data.entries.length > 0) {
-      if (data.summary && data.summary.summary) {
-        const meta = el("div", {class:"meta"},[
-          `Summary · ${data.summary.provider} · ${data.summary.model}`,
-          el("button", {class:"refresh", onclick: () => regen(data.date)}, "Refresh"),
-        ]);
-        const body = el("div", {class:"body"}, data.summary.summary);
-        summarySlot.appendChild(el("div", {class:"summary"}, [meta, body]));
+    if (data.entries.length > 0) {
+      if (data.summary_enabled) {
+        if (data.summary && data.summary.summary) {
+          const meta = el("div", {class:"meta"},[
+            `Summary · ${data.summary.provider} · ${shortModel(data.summary.model)}`,
+            el("button", {class:"refresh", onclick: () => regen(data.date)}, "Refresh"),
+          ]);
+          const body = el("div", {class:"body"}, data.summary.summary);
+          summarySlot.appendChild(el("div", {class:"summary"}, [meta, body]));
+        } else {
+          const label = data.summary_model
+            ? `Generate a summary? · ${data.summary_provider} · ${shortModel(data.summary_model)}`
+            : "Generate a summary for this day?";
+          const msg = el("span", null, label);
+          const btn = el("button", {onclick: () => regen(data.date)}, "Generate");
+          summarySlot.appendChild(el("div", {class:"generate"}, [msg, btn]));
+        }
       } else {
-        const msg = el("span", null, "Generate a summary for this day?");
-        const btn = el("button", {onclick: () => regen(data.date)}, "Generate");
-        summarySlot.appendChild(el("div", {class:"generate"}, [msg, btn]));
+        // Feature off — show a hint so the user knows it exists
+        const hint = el("div", {class:"generate"}, [
+          el("span", null, [
+            "💡 Summaries are off. Enable them by adding ",
+            el("code", {class:"inline"}, '"summaries": {"provider": "local"}'),
+            " to ~/.voiceclip/config.json — then restart ",
+            el("code", {class:"inline"}, "voiceclip view"),
+            ".",
+          ]),
+        ]);
+        summarySlot.appendChild(hint);
       }
     }
 
@@ -640,6 +721,8 @@ _PAGE_HTML = r"""<!doctype html>
       navigator.clipboard.writeText(e.text).then(() => flash(ev.target, "Copied"));
     }}, "Copy");
     const actions = [copyBtn];
+    const wrap = el("div", {class:`entry ${e.kind}`});
+    wrap.dataset.entryId = String(e.id);
     if (e.kind === "transcription") {
       const promoteBtn = el("button", {onclick: async ev => {
         const r = await fetch("/api/promote", {
@@ -647,11 +730,19 @@ _PAGE_HTML = r"""<!doctype html>
           headers: {"Content-Type":"application/json"},
           body: JSON.stringify({id: e.id}),
         });
-        if (r.ok) { flash(ev.target, "Promoted"); setTimeout(() => load(state.date), 400); }
-        else flash(ev.target, "Failed");
+        if (r.ok) {
+          flash(ev.target, "Promoted");
+          // Gentle update: fade out the row in place, then restats/resection
+          // without a full re-render that collapses the transcriptions panel.
+          setTimeout(() => fadeOutAndReconcile(wrap), 500);
+        } else flash(ev.target, "Failed");
       }}, "💭 Keep");
       actions.push(promoteBtn);
     }
+    // Delete — two-step confirm. First click arms the button, second confirms.
+    // Auto-resets after ~3s if untouched.
+    const deleteBtn = el("button", {class: "danger", onclick: ev => handleDelete(ev.target, wrap, e)}, "Delete");
+    actions.push(deleteBtn);
     const text = el("div", {class:"text"}, e.text);
     const meta = el("div", {class:"meta"}, [
       `${e.kind === "reflection" ? "💭" : "📝"} ${fmtTime(e.timestamp)}`,
@@ -659,7 +750,73 @@ _PAGE_HTML = r"""<!doctype html>
       e.app_name ? `· ${e.app_name}` : null,
       el("div", {class:"actions"}, actions),
     ]);
-    return el("div", {class:`entry ${e.kind}`}, [text, meta]);
+    wrap.appendChild(text);
+    wrap.appendChild(meta);
+    return wrap;
+  }
+
+  // Animate a row out, then remove it and nudge the stats line without a
+  // full page re-render (keeps the transcriptions <details> open, preserves scroll).
+  function fadeOutAndReconcile(node) {
+    node.classList.add("removing");
+    // Match the CSS transition duration below (.35s)
+    setTimeout(() => {
+      const parent = node.parentNode;
+      node.remove();
+      // If a section (reflections / transcriptions <details>) is now empty,
+      // hide its header too so we don't leave a dangling title.
+      if (parent && parent.children && parent.children.length === 0 &&
+          (parent.tagName === "SECTION" || parent.tagName === "DETAILS")) {
+        parent.remove();
+      }
+      refreshCounts();
+    }, 360);
+  }
+
+  async function refreshCounts() {
+    // Update only the "N transcriptions · M reflections" stat line and the
+    // apps bar — do NOT rerender the entries list (that would collapse the
+    // transcriptions details and lose scroll position).
+    try {
+      const r = await fetch(`/api/day?date=${state.date}`);
+      const data = await r.json();
+      const s = data.stats;
+      document.getElementById("stats").textContent =
+        `${s.transcriptions} transcription${s.transcriptions===1?"":"s"} · ${s.reflections} reflection${s.reflections===1?"":"s"}`;
+      // The transcriptions <details> summary shows a count — refresh it if present.
+      const details = document.querySelector("details.transcriptions summary");
+      if (details) {
+        const remaining = document.querySelectorAll(".entry.transcription").length;
+        details.textContent = `Show ${remaining} transcription${remaining===1?"":"s"}`;
+      }
+      // If nothing is left on the day, show the empty state.
+      if (data.entries.length === 0) load(state.date);
+    } catch(e) { /* best effort */ }
+  }
+
+  function handleDelete(btn, node, entry) {
+    if (btn.dataset.armed === "1") {
+      btn.dataset.armed = "";
+      fetch("/api/delete", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({id: entry.id}),
+      }).then(r => {
+        if (r.ok) fadeOutAndReconcile(node);
+        else flash(btn, "Failed");
+      });
+      return;
+    }
+    btn.dataset.armed = "1";
+    const prev = btn.textContent;
+    btn.textContent = "Really delete?";
+    btn.classList.add("armed");
+    const reset = () => {
+      btn.dataset.armed = "";
+      btn.textContent = prev;
+      btn.classList.remove("armed");
+    };
+    setTimeout(() => { if (btn.dataset.armed === "1") reset(); }, 3000);
   }
 
   function flash(btn, label) {
@@ -671,7 +828,7 @@ _PAGE_HTML = r"""<!doctype html>
 
   async function regen(date) {
     const slot = document.getElementById("summary_slot");
-    slot.innerHTML = `<div class="generate"><span>Thinking…</span></div>`;
+    slot.innerHTML = `<div class="generate"><span><span class="spinner"></span>Thinking — local models take 15-60 seconds on first run…</span></div>`;
     try {
       const r = await fetch("/api/summarize", {
         method: "POST",
@@ -680,13 +837,31 @@ _PAGE_HTML = r"""<!doctype html>
       });
       const data = await r.json();
       if (!r.ok) {
-        slot.innerHTML = `<div class="generate"><span style="color:#c44">${(data.error||"failed")}</span></div>`;
+        let msg = data.error || "failed";
+        // Friendly hints for the most common failures.
+        // The provider error messages already contain the exact install command,
+        // so we just pass them through — no regex rewriting needed.
+        slot.innerHTML = `<div class="generate"><span style="color:#c44; white-space:pre-line">${escapeHtml(msg)}</span></div>`;
         return;
       }
       load(date);
     } catch(e) {
-      slot.innerHTML = `<div class="generate"><span style="color:#c44">${e.message}</span></div>`;
+      slot.innerHTML = `<div class="generate"><span style="color:#c44">${escapeHtml(e.message)}</span></div>`;
     }
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // Shorten long HF model IDs for display. "mlx-community/Qwen2.5-7B-Instruct-4bit"
+  // → "Qwen2.5-7B-Instruct-4bit" (strip the org prefix). Cloud model names
+  // ("gpt-4o-mini") are left alone since they're already short.
+  function shortModel(id) {
+    if (!id) return "";
+    const slash = id.lastIndexOf("/");
+    return slash >= 0 ? id.slice(slash + 1) : id;
   }
 
   // Auto-refresh today's page every 20s while viewing today
