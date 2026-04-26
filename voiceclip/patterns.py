@@ -151,7 +151,7 @@ def _run(provider: str, system: str, user: str, model_id: str) -> str:
     if provider == "openai":
         return llm_provider.complete_openai(
             system=system, user=user, model_id=model_id,
-            max_tokens=900, json_mode=True,
+            json_mode=True,
         )
     if provider == "anthropic":
         return llm_provider.complete_anthropic(

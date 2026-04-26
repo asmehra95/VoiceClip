@@ -117,7 +117,6 @@ def complete_openai(
     system: str,
     user: str,
     model_id: str,
-    max_tokens: int = 400,
     json_mode: bool = False,
 ) -> str:
     """Plain chat completion via OpenAI. Returns text only.
@@ -125,11 +124,10 @@ def complete_openai(
     Set json_mode=True to force JSON-structured output (patterns feature uses
     this; summarizer does not).
 
-    Note: `max_tokens` is accepted for backward compatibility but not sent to
-    the API. Newer reasoning models (GPT-5+, o-series) reject it, and letting
-    the server use its default keeps this code simple across model eras.
+    We don't send `max_tokens` or `temperature` — newer reasoning models
+    (GPT-5+, o-series) reject those parameters, and server defaults are
+    fine for our short completions.
     """
-    del max_tokens  # no longer forwarded; see docstring
     client = _openai_client()
     kwargs: dict[str, Any] = {
         "model": model_id,
