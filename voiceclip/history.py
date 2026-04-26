@@ -122,6 +122,10 @@ def _migrate(conn: sqlite3.Connection):
     _add_column(conn, "edited_at", "TEXT")
     # Research flag: entry is a topic for the research queue (not a normal clip)
     _add_column(conn, "is_research_topic", "INTEGER NOT NULL DEFAULT 0")
+    # Archive marker for research topics: timestamp the topic was marked
+    # "done" by the user. Null means active. Archived topics stay in FTS and
+    # can be surfaced by search, but they disappear from the live queue.
+    _add_column(conn, "archived_at", "TEXT")
     # Backfill any pre-existing NULL kinds (shouldn't happen given the DEFAULT,
     # but harmless and explicit).
     conn.execute(
@@ -888,7 +892,8 @@ def create_research_topic(text: str, *, app_name: str | None = None) -> int | No
 
 
 def list_research_topics(status_filter: str | None = None, limit: int = 100) -> list[dict]:
-    """Return research topics with the status of their latest brief.
+    """Return ACTIVE (non-archived) research topics with the status of their
+    latest brief.
 
     status_filter: None = all; 'pending' = no brief yet OR failed;
                    'ready' = at least one completed brief; 'read' = TBD later.
@@ -920,6 +925,7 @@ def list_research_topics(status_filter: str | None = None, limit: int = 100) -> 
             GROUP BY entry_id
         ) AS done_counts ON done_counts.entry_id = t.id
         WHERE t.is_research_topic = 1
+          AND t.archived_at IS NULL
         ORDER BY t.id DESC
         LIMIT ?
         """,
@@ -948,6 +954,101 @@ def list_research_topics(status_filter: str | None = None, limit: int = 100) -> 
             "brief_count": brief_count,
         })
     return topics
+
+
+def list_archived_research_topics(limit: int = 200) -> list[dict]:
+    """Return archived research topics, newest-archived first.
+
+    Each row includes the latest done brief so the UI can preview it without
+    a second request. Archived rows are invisible from list_research_topics
+    but always appear here and always stay searchable via FTS.
+    """
+    if _conn is None:
+        return []
+    rows = _conn.execute(
+        """
+        SELECT
+          t.id, t.timestamp, t.formatted_text, t.app_name, t.archived_at,
+          COALESCE(done_counts.n, 0) AS brief_count
+        FROM transcriptions t
+        LEFT JOIN (
+            SELECT entry_id, COUNT(*) AS n
+            FROM research_briefs
+            WHERE status = 'done'
+            GROUP BY entry_id
+        ) AS done_counts ON done_counts.entry_id = t.id
+        WHERE t.is_research_topic = 1
+          AND t.archived_at IS NOT NULL
+        ORDER BY t.archived_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "timestamp": r[1],
+            "text": r[2],
+            "app_name": r[3],
+            "archived_at": r[4],
+            "brief_count": r[5] or 0,
+            "status": "archived",
+        }
+        for r in rows
+    ]
+
+
+def archive_topic(entry_id: int) -> dict | None:
+    """Mark a research topic as archived. Returns the row on success, None
+    if the id doesn't exist or isn't a research topic."""
+    if _conn is None:
+        return None
+    row = _conn.execute(
+        "SELECT is_research_topic FROM transcriptions WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    now = datetime.now().isoformat(timespec="seconds")
+
+    def _do():
+        if _conn is None:
+            return None
+        with _write_lock:
+            _conn.execute(
+                "UPDATE transcriptions SET archived_at = ? WHERE id = ?",
+                (now, entry_id),
+            )
+            _conn.commit()
+            return {"id": entry_id, "archived_at": now}
+
+    return _with_retry(_do)
+
+
+def unarchive_topic(entry_id: int) -> dict | None:
+    """Clear the archived flag on a research topic. Returns the row on
+    success, None if the id doesn't exist or isn't a research topic."""
+    if _conn is None:
+        return None
+    row = _conn.execute(
+        "SELECT is_research_topic FROM transcriptions WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+
+    def _do():
+        if _conn is None:
+            return None
+        with _write_lock:
+            _conn.execute(
+                "UPDATE transcriptions SET archived_at = NULL WHERE id = ?",
+                (entry_id,),
+            )
+            _conn.commit()
+            return {"id": entry_id}
+
+    return _with_retry(_do)
 
 
 def latest_brief(entry_id: int) -> dict | None:

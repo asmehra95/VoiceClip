@@ -435,6 +435,7 @@
 
   function renderQueue(data) {
     const topics = data.topics || [];
+    const archived = data.archived || [];
     const hint = document.getElementById("queue_hint");
     if (!data.research_enabled) {
       hint.innerHTML = `💡 Research is off. Enable it by adding <code class="inline">"research": {"provider": "openai"}</code> to ~/.voiceclip/config.json and exporting <code class="inline">OPENAI_API_KEY</code>.`;
@@ -448,9 +449,19 @@
     slot.innerHTML = "";
     if (!topics.length) {
       slot.appendChild(el("div", {class:"empty"}, "No research topics yet. Add one above."));
-      return;
+    } else {
+      topics.forEach(t => slot.appendChild(renderTopic(t, data.research_enabled)));
     }
-    topics.forEach(t => slot.appendChild(renderTopic(t, data.research_enabled)));
+
+    // Archived section — collapsed by default so it doesn't add noise
+    // until the user actually wants to revisit something.
+    if (archived.length) {
+      const det = el("details", {class: "archived-topics"});
+      det.appendChild(el("summary", null,
+        `Archived (${archived.length})`));
+      archived.forEach(a => det.appendChild(renderArchivedTopic(a)));
+      slot.appendChild(det);
+    }
   }
 
   function renderTopic(t, researchEnabled) {
@@ -470,6 +481,17 @@
         onclick: ev => runResearch(wrap, t.id, ev.target, true)
       }, "Re-research");
       actions.push(btn);
+    }
+
+    // "Done" — archive a topic that's served its purpose. Hides it from
+    // the active queue but keeps the row in the DB so FTS search still
+    // finds it. Only offered once the topic has a brief to "be done with."
+    if (t.status === "ready") {
+      const doneBtn = el("button", {
+        title: "Archive this topic — keeps it searchable but removes it from the queue",
+        onclick: ev => archiveTopic(wrap, t.id, ev.target),
+      }, "Done");
+      actions.push(doneBtn);
     }
 
     // "Copy prompt" — produces a self-contained prompt you can paste into
@@ -804,6 +826,93 @@
     }
   }
 
+  // Archive a research topic. Single-click commit (delete gets the "really?"
+  // guard; archive is reversible so it doesn't need one). Fades the card
+  // out, then reloads the queue so the archived section picks it up.
+  async function archiveTopic(node, id, btn) {
+    const prev = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Archiving…";
+    try {
+      const r = await fetch("/api/research/archive", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({id}),
+      });
+      if (!r.ok) {
+        btn.disabled = false;
+        btn.textContent = prev;
+        flash(btn, "Failed");
+        return;
+      }
+      node.classList.add("removing");
+      setTimeout(() => { node.remove(); loadQueue(); }, 360);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = prev;
+      flash(btn, "Failed");
+    }
+  }
+
+  async function unarchiveTopic(id, btn) {
+    const prev = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Restoring…";
+    try {
+      const r = await fetch("/api/research/unarchive", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({id}),
+      });
+      if (!r.ok) {
+        btn.disabled = false;
+        btn.textContent = prev;
+        flash(btn, "Failed");
+        return;
+      }
+      // Full reload so the topic reappears under the active list
+      loadQueue();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = prev;
+      flash(btn, "Failed");
+    }
+  }
+
+  // Render an archived topic as a compact card inside the collapsible.
+  // Fewer affordances than an active topic — Unarchive + Copy prompt is
+  // enough. The brief (if present) stays collapsed inside its own <details>.
+  function renderArchivedTopic(t) {
+    const wrap = el("div", {class: "topic archived"});
+    wrap.dataset.topicId = String(t.id);
+
+    const unarchiveBtn = el("button", {
+      title: "Move this topic back into the active queue",
+      onclick: ev => unarchiveTopic(t.id, ev.target),
+    }, "Unarchive");
+    const copyPromptBtn = el("button", {
+      title: "Copy a ready-to-paste prompt for an external AI",
+      onclick: ev => copyResearchPrompt(ev.target, t.text),
+    }, "Copy prompt");
+
+    const title = el("div", {class: "title"}, t.text);
+
+    const head = el("div", {class: "topic-head"}, [
+      title,
+      el("div", {class: "actions"}, [unarchiveBtn, copyPromptBtn]),
+    ]);
+    wrap.appendChild(head);
+
+    const archivedWhen = t.archived_at ? fmtRelDate(t.archived_at) : "";
+    wrap.appendChild(el("div", {class: "topic-meta"},
+      archivedWhen ? `archived ${archivedWhen}` : "archived"));
+
+    if (t.brief) {
+      wrap.appendChild(renderBrief(t.brief));
+    }
+    return wrap;
+  }
+
   function handleTopicDelete(btn, node, topic) {
     if (btn.dataset.armed === "1") {
       btn.dataset.armed = "";
@@ -823,8 +932,7 @@
     const prev = btn.textContent;
     btn.textContent = "Really delete?";
     btn.classList.add("armed");
-    setTimeout(() => {
-      if (btn.dataset.armed === "1") {
+    setTimeout(() => {      if (btn.dataset.armed === "1") {
         btn.dataset.armed = "";
         btn.textContent = prev;
         btn.classList.remove("armed");

@@ -73,7 +73,6 @@ code reviews. Maintained top-down by priority. Items get deleted when done
 ### Features (parked)
 - [ ] **Voice capture for research topics** (third hotkey).
 - [ ] **Batch research CLI** — `voiceclip research --pending` for launchd cron.
-- [ ] **Mark-as-read / archive for briefs.**
 - [ ] **Voice hashtags** — "note to self, hashtag todo" → `#todo`.
 - [ ] **Menu bar app** (rumps).
 - [ ] **Long-form dictation** — chunked streaming for clips > 30s.

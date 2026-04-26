@@ -941,3 +941,43 @@
   vertical-align: 2px;
   font-weight: 500;
 }
+
+
+/* Archived research topics — collapsible bin at the bottom of the queue */
+details.archived-topics {
+  margin-top: 32px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+details.archived-topics > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 600;
+  user-select: none;
+  padding: 4px 0;
+}
+details.archived-topics > summary::-webkit-details-marker { display: none; }
+details.archived-topics > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 14px;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+details.archived-topics[open] > summary::before { transform: rotate(90deg); }
+details.archived-topics[open] > summary { margin-bottom: 12px; }
+
+/* Archived cards read muted — they're reference material, not active work */
+.topic.archived {
+  border-left: 3px solid var(--bar);
+  opacity: 0.85;
+}
+.topic.archived .title {
+  color: var(--muted);
+}
+.topic.archived:hover {
+  opacity: 1;
+}

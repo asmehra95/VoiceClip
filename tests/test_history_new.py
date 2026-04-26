@@ -368,3 +368,112 @@ class TestUpdateBriefText:
     def test_returns_none_for_missing_brief(self):
         assert history.update_brief_text(99999, "x") is None
 
+
+
+class TestArchive:
+    """Archive/unarchive flow for research topics.
+
+    Archived topics stay in the DB — still visible to FTS, still in the
+    `transcriptions` table — but drop out of `list_research_topics` and
+    surface only through `list_archived_research_topics`. This matches
+    the Queue's "Done" button UX: declutter the active view without
+    losing the work.
+    """
+
+    def test_archive_hides_from_active_list(self):
+        tid = history.create_research_topic("CRDTs")
+        history.save_brief(tid, status="done", brief_text="b",
+                           provider="openai", model="gpt-4o-mini")
+        assert len(history.list_research_topics()) == 1
+        r = history.archive_topic(tid)
+        assert r is not None and r["id"] == tid
+        assert r["archived_at"]
+        assert history.list_research_topics() == []
+
+    def test_archive_shows_in_archived_list(self):
+        tid = history.create_research_topic("Raft")
+        history.archive_topic(tid)
+        archived = history.list_archived_research_topics()
+        assert len(archived) == 1
+        assert archived[0]["id"] == tid
+        assert archived[0]["archived_at"]
+        assert archived[0]["status"] == "archived"
+
+    def test_unarchive_round_trip(self):
+        tid = history.create_research_topic("Paxos")
+        history.archive_topic(tid)
+        assert len(history.list_research_topics()) == 0
+        assert len(history.list_archived_research_topics()) == 1
+
+        r = history.unarchive_topic(tid)
+        assert r is not None and r["id"] == tid
+        assert len(history.list_research_topics()) == 1
+        assert len(history.list_archived_research_topics()) == 0
+
+    def test_archive_preserves_row_and_brief(self):
+        """Archive must not mutate anything but `archived_at` — the topic
+        text and its briefs are still there when we unarchive."""
+        tid = history.create_research_topic("Vector clocks")
+        bid = history.save_brief(tid, status="done",
+                                 brief_text="a brief on time",
+                                 provider="openai", model="gpt-4o-mini")
+        history.archive_topic(tid)
+        history.unarchive_topic(tid)
+
+        topics = history.list_research_topics()
+        assert len(topics) == 1
+        assert topics[0]["text"] == "Vector clocks"
+        assert topics[0]["status"] == "ready"
+        b = history.latest_brief(tid)
+        assert b is not None and b["id"] == bid
+
+    def test_archive_missing_id_returns_none(self):
+        assert history.archive_topic(99999) is None
+
+    def test_unarchive_missing_id_returns_none(self):
+        assert history.unarchive_topic(99999) is None
+
+    def test_archive_refuses_non_topic_entry(self):
+        """A normal transcription isn't a research topic — archiving one
+        should be a noop that surfaces the mistake rather than silently
+        marking a random entry as archived."""
+        eid = history.save("raw", "Just a regular dictation.", 1.0)
+        assert history.archive_topic(eid) is None
+        # And it must still be findable
+        assert history.get_entry_full(eid) is not None
+
+    def test_unarchive_refuses_non_topic_entry(self):
+        eid = history.save("raw", "Another dictation.", 1.0)
+        assert history.unarchive_topic(eid) is None
+
+    def test_archived_topics_searchable_via_fts(self):
+        """Done doesn't mean gone — FTS still finds the topic text.
+
+        This is the whole point of archive instead of delete: you can come
+        back via search months later.
+        """
+        tid = history.create_research_topic("obscureArchivalKeyword xyz testing")
+        history.archive_topic(tid)
+        # FTS search (search_entries) deliberately excludes research topics,
+        # so we check the base FTS join directly to confirm the row is still
+        # indexed. UI-level search still surfaces archived topics through the
+        # list_archived path — this test just verifies no data went missing.
+        row = history._conn.execute(
+            "SELECT rowid FROM transcriptions_fts "
+            "WHERE transcriptions_fts MATCH ?",
+            ("obscureArchivalKeyword",),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == tid
+
+    def test_archived_list_newest_first(self):
+        """`list_archived_research_topics` must order by archived_at DESC
+        so the most recently finished work sits at the top."""
+        import time
+        a = history.create_research_topic("first")
+        b = history.create_research_topic("second")
+        history.archive_topic(a)
+        time.sleep(1.01)  # archived_at has second granularity
+        history.archive_topic(b)
+        archived = history.list_archived_research_topics()
+        assert [t["text"] for t in archived] == ["second", "first"]

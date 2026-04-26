@@ -503,15 +503,24 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/queue":
-            # Research queue listing
+            # Research queue listing. Returns two lists:
+            #   - topics: active (non-archived) research topics
+            #   - archived: completed/parked topics, still searchable via FTS
+            # Shipping both in one payload keeps the UI to a single round-trip
+            # on tab switch.
             status = (q.get("status") or [None])[0]
             topics = history.list_research_topics(status_filter=status)
             # Attach latest brief to each topic that has one
             for t in topics:
                 if t["brief_count"] > 0:
                     t["brief"] = history.latest_brief(t["id"])
+            archived = history.list_archived_research_topics()
+            for a in archived:
+                if a["brief_count"] > 0:
+                    a["brief"] = history.latest_brief(a["id"])
             self._json({
                 "topics": topics,
+                "archived": archived,
                 "research_enabled": config.RESEARCH_PROVIDER != "none",
                 "research_provider": config.RESEARCH_PROVIDER,
                 "research_model": (
@@ -642,6 +651,34 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "brief not found"}, status=404)
             else:
                 self._json({"ok": True, "brief": result})
+            return
+
+        if path == "/api/research/archive":
+            # Mark a research topic as done. It disappears from the active
+            # queue but stays in the DB — still searchable via FTS and
+            # browsable under the archived list.
+            entry_id = payload.get("id")
+            if not isinstance(entry_id, int):
+                self._json({"error": "bad id"}, status=400)
+                return
+            result = history.archive_topic(entry_id)
+            if result is None:
+                self._json({"error": "topic not found"}, status=404)
+            else:
+                self._json({"ok": True, "topic": result})
+            return
+
+        if path == "/api/research/unarchive":
+            # Restore an archived topic back into the active queue.
+            entry_id = payload.get("id")
+            if not isinstance(entry_id, int):
+                self._json({"error": "bad id"}, status=400)
+                return
+            result = history.unarchive_topic(entry_id)
+            if result is None:
+                self._json({"error": "topic not found"}, status=404)
+            else:
+                self._json({"ok": True, "topic": result})
             return
 
         if path == "/api/research/run":

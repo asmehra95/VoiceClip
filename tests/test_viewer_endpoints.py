@@ -185,3 +185,61 @@ class TestBriefUpdateEndpoint:
         code, r = _post(f"{server}/api/research/update_brief",
                         {"brief_id": "not-int", "text": "x"})
         assert code == 400
+
+
+class TestArchiveEndpoints:
+    """POST /api/research/archive and /api/research/unarchive.
+
+    Also covers that GET /api/queue surfaces an `archived` array alongside
+    the active topics so the UI only needs one round-trip on tab switch.
+    """
+
+    def test_archive_round_trip(self, server):
+        tid = history.create_research_topic("Raft")
+        code, r = _post(f"{server}/api/research/archive", {"id": tid})
+        assert code == 200
+        assert r["topic"]["id"] == tid
+        assert r["topic"]["archived_at"]
+
+        # Queue listing should exclude it from `topics` and include it in
+        # `archived`
+        data = _get(server + "/api/queue")
+        assert all(t["id"] != tid for t in data["topics"])
+        assert any(a["id"] == tid for a in data["archived"])
+
+        code, r = _post(f"{server}/api/research/unarchive", {"id": tid})
+        assert code == 200
+
+        data = _get(server + "/api/queue")
+        assert any(t["id"] == tid for t in data["topics"])
+        assert all(a["id"] != tid for a in data["archived"])
+
+    def test_archive_rejects_bad_id(self, server):
+        code, r = _post(f"{server}/api/research/archive", {"id": "nope"})
+        assert code == 400
+
+    def test_archive_rejects_missing_topic(self, server):
+        code, r = _post(f"{server}/api/research/archive", {"id": 99999})
+        assert code == 404
+
+    def test_archive_rejects_non_topic_entry(self, server):
+        """A normal transcription isn't archivable — the endpoint should
+        reject rather than silently mark something random as archived."""
+        eid = history.save("raw", "Regular entry.", 1.0)
+        code, r = _post(f"{server}/api/research/archive", {"id": eid})
+        assert code == 404
+
+    def test_unarchive_rejects_bad_id(self, server):
+        code, r = _post(f"{server}/api/research/unarchive", {"id": "nope"})
+        assert code == 400
+
+    def test_unarchive_rejects_missing_topic(self, server):
+        code, r = _post(f"{server}/api/research/unarchive", {"id": 99999})
+        assert code == 404
+
+    def test_queue_endpoint_shape_includes_archived(self, server):
+        """Even when empty, the `archived` key must be present so the UI
+        can rely on it without null-checks."""
+        data = _get(server + "/api/queue")
+        assert "archived" in data
+        assert data["archived"] == []
