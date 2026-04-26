@@ -505,27 +505,19 @@
   }
 
   // Template for the external-paste prompt. Mirrors the built-in researcher's
-  // output shape so your response from ChatGPT/Claude looks like a VoiceClip
-  // brief. The web-search instruction is softened to "use search if the topic
-  // is time-sensitive" so it works across tools with different search UIs.
+  // shape (four sections) so external chatbots return in the same format,
+  // but kept minimal — modern models don't need heavy rules.
   function buildExternalPrompt(topicText) {
     const topic = String(topicText || "").trim();
     return [
-      "You are a personal research assistant. Produce a short, scannable brief",
-      "for the topic below. Use these four sections, in markdown:",
+      "Write a short research brief for the topic below. Use markdown with four sections:",
       "",
-      "**What it is** — 2-3 sentences, plain language.",
-      "**Why it matters** — 2-3 sentences on who cares and why.",
-      "**Key tradeoffs / concepts** — 3-5 bullet points, concise.",
-      "**Things to think about** — 2-3 short prompts for reflection or further exploration.",
+      "**What it is** — what the thing is, plainly.",
+      "**Why it matters** — who cares and why.",
+      "**Key tradeoffs / concepts** — a few bullets.",
+      "**Things to think about** — 2-3 prompts for further thought.",
       "",
-      "Rules:",
-      "- If the topic is time-sensitive, specific to a product, or likely to",
-      "  require current information, use web search and cite sources.",
-      "- If it's conceptual and well-established, answer from knowledge.",
-      "- Be direct. No preamble. No 'great question'. No 'here is a brief'.",
-      "- Total length: under 300 words.",
-      "- Use plain markdown — headings as **bold**, bullets as `- `.",
+      "If the topic is time-sensitive or product-specific, use web search and cite sources. Otherwise answer from knowledge.",
       "",
       "Topic:",
       "",
