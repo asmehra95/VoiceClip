@@ -217,8 +217,6 @@ class HotkeyHandler:
                 notify(self._label, "No audio captured")
                 return
 
-            notify(self._label, "🔄 Transcribing...")
-
             t0 = time.time()
             text = transcribe(path)
             elapsed = time.time() - t0
@@ -278,7 +276,9 @@ class HotkeyHandler:
         preview = text[:150] + ("..." if len(text) > 150 else "")
         log.info("Copied %d chars in %.1fs", len(text), elapsed)
         log.info('Text: "%s"', preview)
-        notify(f"{self._label} ✅", text[:100])
+        # No success notification — the pasted text itself is the confirmation,
+        # and the Glass chime tells you the copy happened. Notifications here
+        # are just noise in Notification Center.
 
     def _discard_recording(self):
         """Clean up a too-short recording in the background."""
