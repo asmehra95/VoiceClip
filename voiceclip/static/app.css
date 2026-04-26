@@ -912,3 +912,32 @@
   color: var(--accent);
   font-weight: 600;
 }
+
+
+/* Editable topic title */
+.topic .title[contenteditable="true"] {
+  cursor: text;
+  padding: 4px 8px;
+  margin: -4px -8px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.topic .title[contenteditable="true"]:hover {
+  background: var(--bar);
+}
+.topic .title[contenteditable="true"]:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  background: var(--bg);
+}
+.topic .title .saved-pill {
+  display: inline-block;
+  font-size: 10px;
+  background: var(--accent);
+  color: white;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 8px;
+  vertical-align: 2px;
+  font-weight: 500;
+}

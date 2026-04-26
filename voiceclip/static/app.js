@@ -486,8 +486,19 @@
     const deleteBtn = el("button", {class:"danger", onclick: ev => handleTopicDelete(ev.target, wrap, t)}, "Delete");
     actions.push(deleteBtn);
 
+    // Topic title is click-to-edit. Uses the same /api/update endpoint
+    // the Journal's inline edits use, since research topics are stored
+    // as transcriptions with is_research_topic=1.
+    const title = el("div", {
+      class: "title",
+      contenteditable: "true",
+      spellcheck: "true",
+      title: "Click to edit",
+    }, t.text);
+    wireTopicTitleEdit(title, t);
+
     const head = el("div", {class:"topic-head"}, [
-      el("div", {class:"title"}, t.text),
+      title,
       el("div", {class:"actions"}, actions),
     ]);
     wrap.appendChild(head);
@@ -533,6 +544,55 @@
       catch(e2) { flash(btn, "Copy failed"); }
       document.body.removeChild(ta);
     }
+  }
+
+  // Click-to-edit on the topic title. Mirrors the Journal's wireInlineEdit:
+  // plain-text paste, Esc cancels, Cmd+Enter or blur saves. Uses the
+  // existing /api/update endpoint (research topics live in transcriptions
+  // with is_research_topic=1, so the same update path works).
+  function wireTopicTitleEdit(node, topic) {
+    node.dataset.original = topic.text;
+    node.addEventListener("paste", (ev) => {
+      ev.preventDefault();
+      const text = (ev.clipboardData || window.clipboardData).getData("text/plain");
+      document.execCommand("insertText", false, text);
+    });
+    node.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        node.textContent = node.dataset.original;
+        node.blur();
+        ev.preventDefault();
+      } else if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
+        ev.preventDefault();
+        node.blur();
+      }
+    });
+    node.addEventListener("blur", async () => {
+      const newText = node.textContent.trim();
+      const oldText = node.dataset.original;
+      if (!newText || newText === oldText) {
+        if (!newText) node.textContent = oldText;
+        return;
+      }
+      try {
+        const r = await fetch("/api/update", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({id: topic.id, text: newText}),
+        });
+        if (!r.ok) {
+          node.textContent = oldText;
+          return;
+        }
+        node.dataset.original = newText;
+        topic.text = newText;  // keep in sync so Research / Copy-prompt use the new text
+        const pill = el("span", {class:"saved-pill"}, "saved");
+        node.appendChild(pill);
+        setTimeout(() => pill.remove(), 1200);
+      } catch(e) {
+        node.textContent = oldText;
+      }
+    });
   }
 
   function renderBrief(brief) {
