@@ -472,6 +472,10 @@
   }
   .topic .actions .primary:hover { opacity: 0.9; }
   .topic .actions .danger:hover { color: #c44; border-color: #c44; }
+  .topic .actions .flash {
+    color: var(--accent) !important;
+    border-color: var(--accent);
+  }
   .topic.removing { opacity: 0; transform: translateX(-12px); }
   .topic .web-badge {
     font-size: 10px;

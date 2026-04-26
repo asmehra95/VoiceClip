@@ -471,6 +471,18 @@
       }, "Re-research");
       actions.push(btn);
     }
+
+    // "Copy prompt" — produces a self-contained prompt you can paste into
+    // ChatGPT / Claude / Perplexity to get the same brief format as the
+    // built-in research. Works regardless of status; useful when the
+    // user doesn't have a cloud provider configured or just prefers
+    // their own chatbot for a given topic.
+    const copyPromptBtn = el("button", {
+      title: "Copy a ready-to-paste prompt for an external AI",
+      onclick: ev => copyResearchPrompt(ev.target, t.text),
+    }, "Copy prompt");
+    actions.push(copyPromptBtn);
+
     const deleteBtn = el("button", {class:"danger", onclick: ev => handleTopicDelete(ev.target, wrap, t)}, "Delete");
     actions.push(deleteBtn);
 
@@ -490,6 +502,55 @@
       wrap.appendChild(renderBrief(t.brief));
     }
     return wrap;
+  }
+
+  // Template for the external-paste prompt. Mirrors the built-in researcher's
+  // output shape so your response from ChatGPT/Claude looks like a VoiceClip
+  // brief. The web-search instruction is softened to "use search if the topic
+  // is time-sensitive" so it works across tools with different search UIs.
+  function buildExternalPrompt(topicText) {
+    const topic = String(topicText || "").trim();
+    return [
+      "You are a personal research assistant. Produce a short, scannable brief",
+      "for the topic below. Use these four sections, in markdown:",
+      "",
+      "**What it is** — 2-3 sentences, plain language.",
+      "**Why it matters** — 2-3 sentences on who cares and why.",
+      "**Key tradeoffs / concepts** — 3-5 bullet points, concise.",
+      "**Things to think about** — 2-3 short prompts for reflection or further exploration.",
+      "",
+      "Rules:",
+      "- If the topic is time-sensitive, specific to a product, or likely to",
+      "  require current information, use web search and cite sources.",
+      "- If it's conceptual and well-established, answer from knowledge.",
+      "- Be direct. No preamble. No 'great question'. No 'here is a brief'.",
+      "- Total length: under 300 words.",
+      "- Use plain markdown — headings as **bold**, bullets as `- `.",
+      "",
+      "Topic:",
+      "",
+      topic,
+    ].join("\n");
+  }
+
+  async function copyResearchPrompt(btn, topicText) {
+    const prompt = buildExternalPrompt(topicText);
+    try {
+      await navigator.clipboard.writeText(prompt);
+      flash(btn, "Copied ✓");
+    } catch(e) {
+      // Some browsers block clipboard from non-focused contexts; fall back
+      // to the legacy execCommand path.
+      const ta = document.createElement("textarea");
+      ta.value = prompt;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      try { document.execCommand("copy"); flash(btn, "Copied ✓"); }
+      catch(e2) { flash(btn, "Copy failed"); }
+      document.body.removeChild(ta);
+    }
   }
 
   function renderBrief(brief) {
