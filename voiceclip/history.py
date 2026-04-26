@@ -1111,3 +1111,35 @@ def app_distribution_for_window(start_date: str, end_date: str, top_n: int = 8) 
         (f"{start_date}T", f"{end_date}T", top_n),
     ).fetchall()
     return [{"name": r[0], "count": r[1]} for r in rows]
+
+
+
+def update_brief_text(brief_id: int, new_text: str) -> dict | None:
+    """Update the text of a research brief in place. Used when the user
+    edits a brief inline. Returns the updated brief row as a dict, or None
+    if the brief doesn't exist / history isn't initialized.
+
+    Note: sources and used_web_search are preserved — the edit is a textual
+    cleanup, not a full regeneration. Re-research is the path for fresh
+    sources.
+    """
+    if _conn is None:
+        return None
+    existing = _conn.execute(
+        "SELECT id FROM research_briefs WHERE id = ?", (brief_id,)
+    ).fetchone()
+    if not existing:
+        return None
+
+    def _do():
+        if _conn is None:
+            return None
+        with _write_lock:
+            _conn.execute(
+                "UPDATE research_briefs SET brief_text = ? WHERE id = ?",
+                (new_text, brief_id),
+            )
+            _conn.commit()
+            return {"id": brief_id, "text": new_text}
+
+    return _with_retry(_do)

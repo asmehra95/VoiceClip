@@ -153,3 +153,35 @@ class TestPostEndpoints:
     def test_bad_payload(self, server):
         code, r = _post(f"{server}/api/delete", {"id": "not-an-int"})
         assert code == 400
+
+
+
+class TestBriefUpdateEndpoint:
+    """POST /api/research/update_brief edits an existing brief's text."""
+
+    def test_update_happy_path(self, server):
+        tid = history.create_research_topic("CRDTs")
+        bid = history.save_brief(tid, status="done", brief_text="before",
+                                 provider="openai", model="gpt-4o-mini")
+        code, r = _post(f"{server}/api/research/update_brief",
+                        {"brief_id": bid, "text": "after"})
+        assert code == 200
+        assert r["brief"]["text"] == "after"
+
+    def test_update_rejects_empty_text(self, server):
+        tid = history.create_research_topic("X")
+        bid = history.save_brief(tid, status="done", brief_text="whatever",
+                                 provider="openai", model="gpt-4o-mini")
+        code, r = _post(f"{server}/api/research/update_brief",
+                        {"brief_id": bid, "text": "   "})
+        assert code == 400
+
+    def test_update_rejects_missing_brief(self, server):
+        code, r = _post(f"{server}/api/research/update_brief",
+                        {"brief_id": 99999, "text": "x"})
+        assert code == 404
+
+    def test_update_rejects_bad_id(self, server):
+        code, r = _post(f"{server}/api/research/update_brief",
+                        {"brief_id": "not-int", "text": "x"})
+        assert code == 400

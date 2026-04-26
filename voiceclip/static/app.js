@@ -504,20 +504,10 @@
     return wrap;
   }
 
-  // Template for the external-paste prompt. Mirrors the built-in researcher's
-  // shape (four sections) so external chatbots return in the same format,
-  // but kept minimal — modern models don't need heavy rules.
   function buildExternalPrompt(topicText) {
     const topic = String(topicText || "").trim();
     return [
-      "Write a short research brief for the topic below. Use markdown with four sections:",
-      "",
-      "**What it is** — what the thing is, plainly.",
-      "**Why it matters** — who cares and why.",
-      "**Key tradeoffs / concepts** — a few bullets.",
-      "**Things to think about** — 2-3 prompts for further thought.",
-      "",
-      "If the topic is time-sensitive or product-specific, use web search and cite sources. Otherwise answer from knowledge.",
+      "Research this topic. Use web search if it's time-sensitive or product-specific; otherwise answer from knowledge.",
       "",
       "Topic:",
       "",
@@ -546,15 +536,30 @@
   }
 
   function renderBrief(brief) {
-    const body = el("div", {class:"brief"});
-    body.appendChild(renderMarkdown(brief.text));
-    if (brief.used_web_search) {
-      const badge = el("span", {class:"web-badge"}, "web");
-      body.insertBefore(badge, body.firstChild);
-    }
-    const wrap = el("div", null, [body]);
+    // The brief is shown as a <details> so long briefs don't take over the
+    // queue. Two modes inside:
+    //   - view mode (default): rendered markdown, not editable
+    //   - edit mode: plain textarea with the raw text, save on blur
+    //
+    // Clicking the rendered body flips to edit mode. Blur commits to the
+    // server and re-renders. Escape cancels without saving.
+    const wrap = el("details", {class: "brief-details", open: "open"});
+
+    const summary = el("summary", null, [
+      el("span", {class: "brief-summary-label"}, "Brief"),
+      brief.used_web_search
+        ? el("span", {class: "web-badge"}, "web")
+        : null,
+      el("span", {class: "brief-summary-preview"}, previewOf(brief.text)),
+    ]);
+    wrap.appendChild(summary);
+
+    const body = el("div", {class: "brief"});
+    renderBriefBody(body, brief);
+    wrap.appendChild(body);
+
     if (brief.sources && brief.sources.length) {
-      const src = el("div", {class:"sources"});
+      const src = el("div", {class: "sources"});
       src.appendChild(el("div", null, `Sources (${brief.sources.length}):`));
       brief.sources.forEach(s => {
         src.appendChild(el("a", {href: s.url, target: "_blank", rel: "noopener"}, s.title));
@@ -562,6 +567,105 @@
       wrap.appendChild(src);
     }
     return wrap;
+  }
+
+  // One-line preview derived from the brief text. Strips markdown to keep
+  // the <summary> line clean.
+  function previewOf(text) {
+    const s = String(text || "")
+      .replace(/\*\*/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    return s.length > 140 ? s.slice(0, 140).trimEnd() + "…" : s;
+  }
+
+  function renderBriefBody(container, brief) {
+    container.innerHTML = "";
+    const rendered = el("div", {class: "brief-rendered"});
+    rendered.appendChild(renderMarkdown(brief.text));
+    // Click-to-edit affordance
+    rendered.title = "Click to edit";
+    rendered.addEventListener("click", () => {
+      enterEditMode(container, brief);
+    });
+    container.appendChild(rendered);
+  }
+
+  function enterEditMode(container, brief) {
+    container.innerHTML = "";
+    const ta = document.createElement("textarea");
+    ta.className = "brief-editor";
+    ta.value = brief.text;
+    ta.rows = Math.min(30, Math.max(6, brief.text.split("\n").length + 2));
+    container.appendChild(ta);
+
+    const hint = el("div", {class: "brief-edit-hint"},
+      "Cmd/Ctrl+Enter to save · Esc to cancel · click elsewhere to save");
+    container.appendChild(hint);
+
+    ta.focus();
+    // Move caret to end
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+
+    let committed = false;
+    const save = async () => {
+      if (committed) return;
+      committed = true;
+      const newText = ta.value.trim();
+      if (!newText || newText === brief.text) {
+        renderBriefBody(container, brief);
+        return;
+      }
+      try {
+        const r = await fetch("/api/research/update_brief", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({brief_id: brief.id, text: newText}),
+        });
+        if (r.ok) {
+          brief.text = newText;
+          // Update the <summary> preview to match
+          const details = container.closest("details.brief-details");
+          if (details) {
+            const preview = details.querySelector(".brief-summary-preview");
+            if (preview) preview.textContent = previewOf(newText);
+          }
+          renderBriefBody(container, brief);
+          flashNote(container, "Saved");
+        } else {
+          renderBriefBody(container, brief);
+          flashNote(container, "Save failed");
+        }
+      } catch (e) {
+        renderBriefBody(container, brief);
+        flashNote(container, "Save failed");
+      }
+    };
+
+    const cancel = () => {
+      if (committed) return;
+      committed = true;
+      renderBriefBody(container, brief);
+    };
+
+    ta.addEventListener("blur", save);
+    ta.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        cancel();
+      } else if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
+        ev.preventDefault();
+        ta.blur();  // triggers save
+      }
+    });
+  }
+
+  // Small inline toast appended to the brief container. Self-removes after
+  // a beat. Distinct from the button flash() so the source of truth stays clear.
+  function flashNote(container, text) {
+    const note = el("div", {class: "brief-save-note"}, text);
+    container.appendChild(note);
+    setTimeout(() => note.remove(), 1200);
   }
 
   async function runResearch(wrap, id, btn, isRerun) {

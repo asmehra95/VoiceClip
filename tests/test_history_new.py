@@ -348,3 +348,23 @@ class TestReconnect:
         monkeypatch.setattr(history, "_reconnect", lambda: False)
         result = history.save("raw", "Doomed.", 1.0)
         assert result is None
+
+
+
+class TestUpdateBriefText:
+    """Unit tests for the history.update_brief_text helper."""
+
+    def test_updates_existing_brief(self):
+        tid = history.create_research_topic("A topic")
+        bid = history.save_brief(tid, status="done", brief_text="original",
+                                 provider="openai", model="gpt-4o-mini")
+        r = history.update_brief_text(bid, "edited")
+        assert r is not None
+        assert r["text"] == "edited"
+        # And reading back confirms the write
+        brief = history.latest_brief(tid)
+        assert brief["text"] == "edited"
+
+    def test_returns_none_for_missing_brief(self):
+        assert history.update_brief_text(99999, "x") is None
+

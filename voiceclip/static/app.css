@@ -824,3 +824,91 @@
   font-size: 12px;
   margin-top: 8px;
 }
+
+
+/* Collapsible + editable research brief */
+.brief-details {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+}
+.brief-details > summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+  font-size: 13px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  user-select: none;
+  padding: 2px 0;
+}
+.brief-details > summary::-webkit-details-marker { display: none; }
+.brief-details > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 12px;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+.brief-details[open] > summary::before { transform: rotate(90deg); }
+.brief-details > summary .brief-summary-label {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.brief-details > summary .brief-summary-preview {
+  color: var(--muted);
+  font-size: 13px;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.brief-details .brief {
+  margin-top: 10px;
+}
+
+/* Rendered (view) mode — clickable to edit, subtle hover hint */
+.brief-rendered {
+  cursor: text;
+  padding: 6px 8px;
+  margin: -6px -8px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.brief-rendered:hover {
+  background: var(--bar);
+}
+
+.brief-editor {
+  width: 100%;
+  min-height: 120px;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.55;
+  resize: vertical;
+  outline: none;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.brief-edit-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.brief-save-note {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+}

@@ -626,6 +626,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "id": new_id})
             return
 
+        if path == "/api/research/update_brief":
+            # Edit the text of an existing research brief in place.
+            brief_id = payload.get("brief_id")
+            text = payload.get("text", "")
+            if not isinstance(brief_id, int) or not isinstance(text, str):
+                self._json({"error": "bad payload"}, status=400)
+                return
+            text = text.strip()
+            if not text:
+                self._json({"error": "text is empty"}, status=400)
+                return
+            result = history.update_brief_text(brief_id, text)
+            if result is None:
+                self._json({"error": "brief not found"}, status=404)
+            else:
+                self._json({"ok": True, "brief": result})
+            return
+
         if path == "/api/research/run":
             entry_id = payload.get("id")
             if not isinstance(entry_id, int):
