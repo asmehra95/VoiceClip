@@ -197,6 +197,19 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/api/search":
+            # Full-text search across all history. Kind filter optional.
+            term = (q.get("q") or [""])[0]
+            kind = (q.get("kind") or [None])[0]
+            if kind not in (None, "transcription", "reflection"):
+                kind = None
+            if not term.strip():
+                self._json({"entries": [], "query": ""})
+                return
+            entries = history.search_entries(term, limit=50, kind=kind)
+            self._json({"entries": entries, "query": term})
+            return
+
         self._not_found()
 
     def do_POST(self):
@@ -517,6 +530,38 @@ _PAGE_HTML = r"""<!doctype html>
     font-size: 13px;
     margin-bottom: 20px;
   }
+
+  /* Search */
+  .search-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .search-row input {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 14px;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 14px;
+  }
+  .search-row input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+    border-color: var(--accent);
+  }
+  .search-row button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 0 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font: inherit; font-size: 13px;
+  }
+  .search-row button:hover { color: var(--text); border-color: var(--muted); }
   .apps {
     margin: 18px 0 28px;
   }
@@ -1011,6 +1056,13 @@ _PAGE_HTML = r"""<!doctype html>
       <div class="stats" id="stats"></div>
     </div>
 
+    <div class="search-row">
+      <input id="search_input" type="search"
+             placeholder="Search across all days (⌘K)"
+             autocomplete="off">
+      <button id="search_clear" style="display:none">Clear</button>
+    </div>
+
     <div id="summary_slot"></div>
     <div id="apps_slot"></div>
     <section class="entries" id="entries_slot"></section>
@@ -1086,29 +1138,70 @@ _PAGE_HTML = r"""<!doctype html>
     return node;
   }
 
-  // Very small markdown renderer — enough for **bold**, bullets, blank lines.
-  // We use it only for research briefs (LLM-produced), not arbitrary input,
-  // so the risk surface is limited.
+  // Tiny markdown renderer that builds DOM nodes instead of assigning HTML.
+  // Important because this renders LLM-produced text that could contain
+  // prompt-injected markup; building via textContent kills the XSS path.
+  // Supported: **bold**, `- ` bullets, blank-line paragraphs.
   function renderMarkdown(src) {
-    const escaped = String(src || "")
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    // Bold
-    let s = escaped.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-    // Bullets: lines starting with "- " become <li>; group consecutive into <ul>
-    const lines = s.split("\n");
-    const out = [];
-    let inList = false;
-    for (const ln of lines) {
+    const root = document.createElement("div");
+    const lines = String(src || "").split("\n");
+    let currentList = null;
+    let paraBuf = [];
+
+    function flushPara() {
+      if (!paraBuf.length) return;
+      const p = document.createElement("div");
+      for (const frag of parseInline(paraBuf.join(" "))) {
+        p.appendChild(frag);
+      }
+      root.appendChild(p);
+      paraBuf = [];
+    }
+
+    for (const raw of lines) {
+      const ln = raw;
       if (/^\s*-\s+/.test(ln)) {
-        if (!inList) { out.push("<ul>"); inList = true; }
-        out.push("<li>" + ln.replace(/^\s*-\s+/, "") + "</li>");
+        flushPara();
+        if (!currentList) {
+          currentList = document.createElement("ul");
+          root.appendChild(currentList);
+        }
+        const li = document.createElement("li");
+        for (const frag of parseInline(ln.replace(/^\s*-\s+/, ""))) {
+          li.appendChild(frag);
+        }
+        currentList.appendChild(li);
+      } else if (ln.trim() === "") {
+        flushPara();
+        currentList = null;
       } else {
-        if (inList) { out.push("</ul>"); inList = false; }
-        out.push(ln);
+        if (currentList) currentList = null;
+        paraBuf.push(ln);
       }
     }
-    if (inList) out.push("</ul>");
-    return out.join("\n");
+    flushPara();
+    return root;
+  }
+
+  // Inline parser — handles **bold**, emits an array of Node children.
+  // All non-marker text goes through createTextNode, so no HTML interpretation.
+  function parseInline(s) {
+    const nodes = [];
+    const re = /\*\*(.+?)\*\*/g;
+    let i = 0, m;
+    while ((m = re.exec(s)) !== null) {
+      if (m.index > i) {
+        nodes.push(document.createTextNode(s.slice(i, m.index)));
+      }
+      const strong = document.createElement("strong");
+      strong.textContent = m[1];
+      nodes.push(strong);
+      i = m.index + m[0].length;
+    }
+    if (i < s.length) {
+      nodes.push(document.createTextNode(s.slice(i)));
+    }
+    return nodes;
   }
 
   // ---------- Tab switching ----------
@@ -1125,6 +1218,13 @@ _PAGE_HTML = r"""<!doctype html>
     document.getElementById("queue_view").style.display = view === "queue" ? "" : "none";
     document.getElementById("patterns_view").style.display = view === "patterns" ? "" : "none";
     document.getElementById("journal_nav").style.visibility = view === "journal" ? "" : "hidden";
+    // Clear stale search on tab-switch
+    if (view !== "journal") {
+      const si = document.getElementById("search_input");
+      const sc = document.getElementById("search_clear");
+      if (si) si.value = "";
+      if (sc) sc.style.display = "none";
+    }
     if (view === "queue") loadQueue();
     else if (view === "patterns") loadPatterns();
     else load(state.date);
@@ -1487,10 +1587,9 @@ _PAGE_HTML = r"""<!doctype html>
 
   function renderBrief(brief) {
     const body = el("div", {class:"brief"});
-    body.innerHTML = renderMarkdown(brief.text);
+    body.appendChild(renderMarkdown(brief.text));
     if (brief.used_web_search) {
       const badge = el("span", {class:"web-badge"}, "web");
-      // Append badge inline with the first <strong> heading, if any
       body.insertBefore(badge, body.firstChild);
     }
     const wrap = el("div", null, [body]);
@@ -1740,6 +1839,76 @@ _PAGE_HTML = r"""<!doctype html>
       btn.textContent = "Failed";
       setTimeout(() => { btn.disabled = false; btn.textContent = "Queue it"; }, 1500);
     }
+  }
+
+  // ---------- Search (journal tab, spans all days) ----------
+
+  let _searchSeq = 0;
+  const searchInput = document.getElementById("search_input");
+  const searchClear = document.getElementById("search_clear");
+
+  searchInput.addEventListener("input", debounceSearch);
+  searchClear.addEventListener("click", () => {
+    searchInput.value = "";
+    searchClear.style.display = "none";
+    load(state.date);
+  });
+
+  // Cmd/Ctrl+K focuses search
+  document.addEventListener("keydown", (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "k") {
+      ev.preventDefault();
+      if (state.view !== "journal") switchTab("journal");
+      searchInput.focus();
+      searchInput.select();
+    }
+  });
+
+  function debounceSearch() {
+    const term = searchInput.value.trim();
+    searchClear.style.display = term ? "" : "none";
+    const mySeq = ++_searchSeq;
+    clearTimeout(debounceSearch._t);
+    debounceSearch._t = setTimeout(() => {
+      if (mySeq !== _searchSeq) return;   // superseded
+      if (!term) { load(state.date); return; }
+      runSearch(term, mySeq);
+    }, 180);
+  }
+
+  async function runSearch(term, seq) {
+    try {
+      const r = await fetch(`/api/search?q=${encodeURIComponent(term)}`);
+      const data = await r.json();
+      if (seq !== _searchSeq) return;  // a newer search started; discard
+      renderSearchResults(term, data.entries || []);
+    } catch(e) { /* best effort */ }
+  }
+
+  function renderSearchResults(term, entries) {
+    // Reuse the existing slots: blank the day-specific sections and replace
+    // the entries list. The search header replaces the day label's stats line.
+    document.getElementById("daylabel").textContent = `Results for "${term}"`;
+    document.getElementById("stats").textContent =
+      `${entries.length} match${entries.length === 1 ? "" : "es"}`;
+    document.getElementById("summary_slot").innerHTML = "";
+    document.getElementById("apps_slot").innerHTML = "";
+    // Nav buttons — disable during search
+    document.getElementById("prev").disabled = true;
+    document.getElementById("next").disabled = true;
+    document.getElementById("today").onclick = () => {
+      searchInput.value = ""; searchClear.style.display = "none";
+      load(todayStr());
+    };
+
+    const slot = document.getElementById("entries_slot");
+    slot.innerHTML = "";
+    if (!entries.length) {
+      slot.appendChild(el("div", {class:"empty"}, "No matches."));
+      return;
+    }
+    // Keep original order (fts rank, then id desc — server-side)
+    entries.forEach(e => slot.appendChild(renderEntry(e)));
   }
 
   load(state.date);

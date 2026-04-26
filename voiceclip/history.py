@@ -117,6 +117,60 @@ def _migrate(conn: sqlite3.Connection):
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_brief_entry ON research_briefs(entry_id)"
     )
+    # Full-text search index (FTS5). Uses the `external content` pattern —
+    # the FTS table references the real `transcriptions` column so there's no
+    # data duplication, and triggers keep it in sync on insert/update/delete.
+    _setup_fts(conn)
+
+
+def _setup_fts(conn: sqlite3.Connection):
+    """Create the FTS5 virtual table + sync triggers if missing, then
+    backfill any rows that aren't indexed yet. Idempotent."""
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS transcriptions_fts
+        USING fts5(
+            formatted_text,
+            content='transcriptions',
+            content_rowid='id',
+            tokenize='porter unicode61'
+        )
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS transcriptions_ai
+        AFTER INSERT ON transcriptions
+        BEGIN
+            INSERT INTO transcriptions_fts(rowid, formatted_text)
+            VALUES (new.id, new.formatted_text);
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS transcriptions_ad
+        AFTER DELETE ON transcriptions
+        BEGIN
+            INSERT INTO transcriptions_fts(transcriptions_fts, rowid, formatted_text)
+            VALUES ('delete', old.id, old.formatted_text);
+        END;
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS transcriptions_au
+        AFTER UPDATE OF formatted_text ON transcriptions
+        BEGIN
+            INSERT INTO transcriptions_fts(transcriptions_fts, rowid, formatted_text)
+            VALUES ('delete', old.id, old.formatted_text);
+            INSERT INTO transcriptions_fts(rowid, formatted_text)
+            VALUES (new.id, new.formatted_text);
+        END;
+    """)
+    # Backfill: if any base rows aren't indexed, rebuild the FTS table.
+    # This covers the "old DB, first run with search" case.
+    row = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM transcriptions) - "
+        "(SELECT COUNT(*) FROM transcriptions_fts)"
+    ).fetchone()
+    if row and row[0] and row[0] > 0:
+        conn.execute(
+            "INSERT INTO transcriptions_fts(transcriptions_fts) VALUES('rebuild')"
+        )
 
 
 def _add_column(conn: sqlite3.Connection, name: str, ddl: str):
@@ -356,18 +410,96 @@ def query_yesterday(kind: str | None = None) -> str:
 
 
 def query_search(term: str, limit: int = 20, kind: str | None = None) -> str:
-    """Search entries by keyword."""
+    """Search entries by keyword (FTS5). Returns formatted CLI output."""
     if _conn is None:
         return "History is not enabled."
-    safe_term = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    kclause, kparams = _kind_clause(kind)
-    rows = _conn.execute(
-        f"{_SELECT} WHERE formatted_text LIKE ? ESCAPE '\\'{kclause} "
-        "ORDER BY id DESC LIMIT ?",
-        (f"%{safe_term}%", *kparams, limit),
-    ).fetchall()
+    rows = _search_rows(term, limit=limit, kind=kind)
     label = _list_label(kind, len(rows), f'matching "{term}"')
     return f"  Search ({label}):\n" + _format_rows(rows)
+
+
+def _fts_query_for(term: str) -> str:
+    """Turn a user-entered search string into a safe FTS5 query.
+
+    FTS5 has its own query syntax (phrase, NEAR, etc). Rather than teach it to
+    users, we tokenize the input on whitespace and AND the tokens together.
+    Punctuation and FTS5-meta characters are stripped; quoted phrases are
+    preserved as-is.
+    """
+    term = (term or "").strip()
+    if not term:
+        return ""
+    # Strip FTS5 meta characters that could otherwise break the query
+    # (":" starts a column filter, "-" is NOT, "*" is prefix, parens group).
+    cleaned = []
+    for ch in term:
+        if ch.isalnum() or ch in ' "-':
+            cleaned.append(ch)
+        else:
+            cleaned.append(" ")
+    cleaned = "".join(cleaned).strip()
+    if not cleaned:
+        return ""
+    # If the user used quotes, keep them. Otherwise split and AND.
+    if '"' in cleaned:
+        return cleaned
+    tokens = [t for t in cleaned.split() if t and t != "-"]
+    if not tokens:
+        return ""
+    # Each token gets suffix-prefix matching via * so "rec" matches "recording"
+    return " AND ".join(f"{t}*" for t in tokens)
+
+
+def _search_rows(term: str, limit: int = 20, kind: str | None = None) -> list:
+    """FTS-backed search returning the same row shape as _SELECT."""
+    if _conn is None:
+        return []
+    q = _fts_query_for(term)
+    if not q:
+        return []
+    kclause, kparams = _kind_clause(kind)
+    try:
+        return _conn.execute(
+            "SELECT t.id, t.timestamp, t.formatted_text, t.duration_seconds, "
+            "       t.persona, t.word_count, t.kind, t.app_name "
+            "FROM transcriptions_fts f "
+            "JOIN transcriptions t ON t.id = f.rowid "
+            "WHERE f.formatted_text MATCH ? "
+            f"  AND t.is_research_topic = 0{kclause} "
+            "ORDER BY f.rank, t.id DESC "
+            "LIMIT ?",
+            (q, *kparams, limit),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # FTS query malformed (unclosed quote, etc) — fall back to LIKE so
+        # the user still gets results instead of an error.
+        safe_term = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return _conn.execute(
+            "SELECT id, timestamp, formatted_text, duration_seconds, "
+            "       persona, word_count, kind, app_name "
+            "FROM transcriptions "
+            "WHERE formatted_text LIKE ? ESCAPE '\\' "
+            f"  AND is_research_topic = 0{kclause} "
+            "ORDER BY id DESC LIMIT ?",
+            (f"%{safe_term}%", *kparams, limit),
+        ).fetchall()
+
+
+def search_entries(term: str, limit: int = 50, kind: str | None = None) -> list[dict]:
+    """FTS search returning a list of dicts — used by the viewer search box."""
+    rows = _search_rows(term, limit=limit, kind=kind)
+    return [
+        {
+            "id": r[0],
+            "timestamp": r[1],
+            "text": r[2],
+            "duration": r[3],
+            "kind": r[6],
+            "app_name": r[7],
+            "word_count": r[5],
+        }
+        for r in rows
+    ]
 
 
 def _list_label(kind: str | None, n: int, suffix: str) -> str:
@@ -537,21 +669,28 @@ def entries_for_day(date: str, kind: str | None = None) -> list[dict]:
 
 
 def day_stats(date: str) -> dict:
-    """Return counts and top-apps for a single day. Excludes research topics."""
+    """Return counts and top-apps for a single day. Excludes research topics.
+
+    Collapses what used to be three separate queries (transcriptions,
+    reflections, apps) into one pass via conditional aggregation + one
+    GROUP BY for the apps bar. Fewer round-trips to SQLite, and the
+    counts come from a single consistent read.
+    """
     if _conn is None:
         return {"transcriptions": 0, "reflections": 0, "apps": []}
-    trow = _conn.execute(
-        "SELECT COUNT(*) FROM transcriptions "
-        "WHERE timestamp >= ? AND timestamp < ? AND kind = 'transcription' "
-        "  AND is_research_topic = 0",
+
+    # Single-query counts via conditional aggregation
+    count_row = _conn.execute(
+        "SELECT "
+        "  SUM(CASE WHEN kind = 'transcription' THEN 1 ELSE 0 END) AS t_count, "
+        "  SUM(CASE WHEN kind = 'reflection' THEN 1 ELSE 0 END) AS r_count "
+        "FROM transcriptions "
+        "WHERE timestamp >= ? AND timestamp < ? AND is_research_topic = 0",
         (f"{date}T", f"{date}T\uffff"),
     ).fetchone()
-    rrow = _conn.execute(
-        "SELECT COUNT(*) FROM transcriptions "
-        "WHERE timestamp >= ? AND timestamp < ? AND kind = 'reflection' "
-        "  AND is_research_topic = 0",
-        (f"{date}T", f"{date}T\uffff"),
-    ).fetchone()
+    t_count = (count_row[0] if count_row else 0) or 0
+    r_count = (count_row[1] if count_row else 0) or 0
+
     app_rows = _conn.execute(
         "SELECT COALESCE(NULLIF(app_name, ''), 'unknown') AS app, COUNT(*) AS n "
         "FROM transcriptions "
@@ -561,8 +700,8 @@ def day_stats(date: str) -> dict:
         (f"{date}T", f"{date}T\uffff"),
     ).fetchall()
     return {
-        "transcriptions": trow[0] if trow else 0,
-        "reflections": rrow[0] if rrow else 0,
+        "transcriptions": t_count,
+        "reflections": r_count,
         "apps": [{"name": a[0], "count": a[1]} for a in app_rows],
     }
 
@@ -696,6 +835,10 @@ def list_research_topics(status_filter: str | None = None, limit: int = 100) -> 
 
     status_filter: None = all; 'pending' = no brief yet OR failed;
                    'ready' = at least one completed brief; 'read' = TBD later.
+
+    Uses a LEFT JOIN with a correlated MAX(id) to pull each topic's latest
+    brief in a single query — cheaper than running subqueries per row at
+    N topics (was 2N+1 queries, now 1).
     """
     if _conn is None:
         return []
@@ -703,12 +846,22 @@ def list_research_topics(status_filter: str | None = None, limit: int = 100) -> 
         """
         SELECT
           t.id, t.timestamp, t.formatted_text, t.app_name,
-          (SELECT status FROM research_briefs b
-             WHERE b.entry_id = t.id
-             ORDER BY b.id DESC LIMIT 1) AS latest_status,
-          (SELECT COUNT(*) FROM research_briefs b
-             WHERE b.entry_id = t.id AND b.status = 'done') AS brief_count
+          latest.status AS latest_status,
+          COALESCE(done_counts.n, 0) AS brief_count
         FROM transcriptions t
+        LEFT JOIN (
+            SELECT entry_id, status
+            FROM research_briefs
+            WHERE id IN (
+                SELECT MAX(id) FROM research_briefs GROUP BY entry_id
+            )
+        ) AS latest ON latest.entry_id = t.id
+        LEFT JOIN (
+            SELECT entry_id, COUNT(*) AS n
+            FROM research_briefs
+            WHERE status = 'done'
+            GROUP BY entry_id
+        ) AS done_counts ON done_counts.entry_id = t.id
         WHERE t.is_research_topic = 1
         ORDER BY t.id DESC
         LIMIT ?

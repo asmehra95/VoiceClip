@@ -207,22 +207,6 @@ The global `dictionary` in your config always applies on top of the active perso
 
 ---
 
-## Grammar Polish (opt-in)
-
-For even cleaner output, enable the local AI grammar fixer. It runs a small language model on your GPU.
-
-```json
-{
-  "polish": true
-}
-```
-
-Your text pastes immediately. The grammar fixer runs in the background and silently replaces the text with a cleaner version about a second later. If it can't improve anything, the original stays.
-
-**Requires one extra install:** `pip install mlx-lm`
-
----
-
 ## Models
 
 VoiceClip downloads the right model on first run (~3 GB for the default). Choose based on your speed/accuracy preference:
@@ -398,7 +382,6 @@ VoiceClip is built to be transparent about what crosses the network. Here is the
 - **Active-app context capture** (when you enable history). Uses `osascript` to read the frontmost app name. Nothing beyond the name is captured.
 
 ### Opt-in local (runs on your Mac if enabled)
-- **Grammar polish** (`polish = true`) — uses `mlx-lm` locally.
 - **Daily summaries** with `summaries.provider = "local"` — uses `mlx-lm` locally.
 - **Patterns coach** with `patterns.provider = "local"` — uses `mlx-lm` locally. **This is the default for Patterns** because it reads the widest window of your history.
 
@@ -450,7 +433,6 @@ rm -rf ~/.cache/huggingface
 | Slow transcription | Try `VOICECLIP_MODEL=small voiceclip` or close GPU-heavy apps |
 | App frozen on first run | Model is downloading (~3 GB). A spinner shows progress |
 | Bad accuracy with Bluetooth headset | Bluetooth mics use low-quality mode. Use MacBook mic for input, headset for output |
-| LLM polish "not installed" | Run `pip install mlx-lm` in your VoiceClip venv |
 
 ---
 
@@ -463,10 +445,14 @@ voiceclip/
     config.py         # Config loader (JSON + env overrides)
     recorder.py       # Audio capture (separate process)
     transcriber.py    # Whisper inference on GPU
-    formatter.py      # Text cleanup and dictionaryands
-    polisher.py       # Optional AI grammar polish
+    formatter.py      # Text cleanup and dictionary substitutions
     hotkey.py         # Hotkey handler (hold + toggle modes)
     macos.py          # Clipboard, paste, sounds, permissions
+    viewer.py         # Local web viewer (journal / queue / patterns tabs)
+    summarizer.py     # Daily summary generator
+    researcher.py     # Research brief generator
+    patterns.py       # Longitudinal coach
+    llm_provider.py   # Unified local/openai/anthropic transport
     utils.py          # Shared utilities
 transcribe.py         # Launcher
 install.sh            # Installer

@@ -224,3 +224,63 @@ class TestCleanup:
         history._conn.commit()
         history.cleanup(max_days=30, reflection_max_days=7)
         assert history.count(kind="reflection") == 0
+
+
+
+class TestSearch:
+    def test_search_finds_simple_term(self):
+        history.save("hello", "The quick brown fox.", 1.0)
+        history.save("hello", "A slow turtle.", 1.0)
+        results = history.search_entries("fox")
+        assert len(results) == 1
+        assert "fox" in results[0]["text"].lower()
+
+    def test_search_multi_token_and(self):
+        history.save("a", "the quick brown fox", 1.0)
+        history.save("b", "brown sugar on toast", 1.0)
+        results = history.search_entries("brown fox")
+        assert len(results) == 1
+        assert "fox" in results[0]["text"].lower()
+
+    def test_search_prefix(self):
+        history.save("a", "recording sounds nice", 1.0)
+        results = history.search_entries("recor")
+        assert len(results) == 1
+
+    def test_search_excludes_research_topics(self):
+        history.save("a", "A normal entry about cats.", 1.0)
+        history.create_research_topic("cats and dogs research")
+        results = history.search_entries("cats")
+        assert len(results) == 1
+        assert results[0]["kind"] == "transcription"
+
+    def test_search_kind_filter(self):
+        history.save("a", "Foxes are cool.", 1.0, kind="transcription")
+        history.save("b", "Foxes are clever.", 1.0, kind="reflection")
+        refl = history.search_entries("foxes", kind="reflection")
+        assert len(refl) == 1
+        assert refl[0]["kind"] == "reflection"
+
+    def test_search_empty_query_returns_empty(self):
+        history.save("a", "anything", 1.0)
+        assert history.search_entries("") == []
+        assert history.search_entries("   ") == []
+
+    def test_search_fts_meta_chars_are_handled(self):
+        # FTS5 treats ":" as a column filter and would otherwise fail
+        history.save("a", "Python version 3.12 released", 1.0)
+        results = history.search_entries('python: 3.12')
+        assert len(results) >= 1
+
+    def test_search_reflects_edits(self):
+        # After an edit, the FTS index should update via trigger.
+        i = history.save("raw", "Original about cats.", 1.0)
+        history.update_text(i, "Edited text about dogs.")
+        assert len(history.search_entries("cats")) == 0
+        assert len(history.search_entries("dogs")) == 1
+
+    def test_search_reflects_deletes(self):
+        i = history.save("a", "Will be deleted soon.", 1.0)
+        assert len(history.search_entries("deleted")) == 1
+        history.delete_entry(i)
+        assert len(history.search_entries("deleted")) == 0

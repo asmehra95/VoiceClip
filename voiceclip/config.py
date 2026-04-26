@@ -214,14 +214,6 @@ def load():
         "VOICECLIP_ENGLISH_ONLY",
         str(cfg.get("english_only", True))
     ).lower() == "true"
-    POLISH_ENABLED = os.environ.get(
-        "VOICECLIP_POLISH",
-        str(cfg.get("polish", False))
-    ).lower() == "true"
-    POLISH_MODEL = os.environ.get(
-        "VOICECLIP_POLISH_MODEL",
-        cfg.get("polish_model", "mlx-community/Qwen2.5-0.5B-Instruct-4bit")
-    )
     PERSONA = os.environ.get("VOICECLIP_PERSONA", cfg.get("persona", "default"))
     HOTKEY = os.environ.get("VOICECLIP_HOTKEY", cfg.get("hotkey", "alt_r"))
     HOTKEY_MODE = os.environ.get("VOICECLIP_HOTKEY_MODE", cfg.get("hotkey_mode", "hold"))
@@ -373,9 +365,9 @@ def load():
     INITIAL_PROMPT = ". ".join(prompt_parts)[:500] if prompt_parts else None
 
     log.info(
-        "Config loaded: model=%s, english=%s, polish=%s, persona=%s, "
+        "Config loaded: model=%s, english=%s, persona=%s, "
         "dict=%d entries, prompt=%s",
-        MODEL, ENGLISH_ONLY, POLISH_ENABLED, PERSONA,
+        MODEL, ENGLISH_ONLY, PERSONA,
         len(DICTIONARY),
         repr(INITIAL_PROMPT[:80] + "...") if INITIAL_PROMPT and len(INITIAL_PROMPT) > 80 else repr(INITIAL_PROMPT),
     )

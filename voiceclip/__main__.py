@@ -82,6 +82,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sumz.add_argument("--force", action="store_true",
                       help="Regenerate even if cached")
 
+    # doctor subcommand — system health check
+    sub.add_parser("doctor", help="Run a health check on your VoiceClip setup")
+
     return parser
 
 
@@ -410,6 +413,9 @@ def main():
         _handle_view(args)
     elif args.command == "summarize":
         _handle_summarize(args)
+    elif args.command == "doctor":
+        from voiceclip.doctor import run as run_doctor
+        sys.exit(run_doctor())
     else:
         _run_voiceclip()
 

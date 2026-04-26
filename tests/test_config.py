@@ -17,8 +17,8 @@ def _isolate_config(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", cfg_path)
     # Clear env vars that might interfere
     for var in [
-        "VOICECLIP_MODEL", "VOICECLIP_ENGLISH_ONLY", "VOICECLIP_POLISH",
-        "VOICECLIP_POLISH_MODEL", "VOICECLIP_PERSONA", "VOICECLIP_HOTKEY",
+        "VOICECLIP_MODEL", "VOICECLIP_ENGLISH_ONLY",
+        "VOICECLIP_PERSONA", "VOICECLIP_HOTKEY",
         "VOICECLIP_HOTKEY_MODE",
     ]:
         monkeypatch.delenv(var, raising=False)

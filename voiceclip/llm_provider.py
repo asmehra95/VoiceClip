@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any, Callable
 
 log = logging.getLogger(__name__)
@@ -23,12 +24,20 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # mlx-lm loads are expensive. Keep (model, tokenizer) pairs by model_id so
 # subsequent calls in the same process reuse the loaded weights.
+#
+# Two concurrent requests with the same model_id will both miss the cache
+# simultaneously without the lock and double-load ~4-8GB into memory.
 
 _mlx_cache: dict[str, tuple[Any, Any]] = {}
+_mlx_cache_lock = threading.Lock()
 
 
 def _mlx_load(model_id: str):
     """Cached mlx-lm load. Returns (model, tokenizer)."""
+    # Fast path: cache hit without holding the lock
+    cached = _mlx_cache.get(model_id)
+    if cached is not None:
+        return cached
     try:
         from mlx_lm import load
     except ImportError:
@@ -36,15 +45,20 @@ def _mlx_load(model_id: str):
             "mlx-lm is not installed. Install it with:\n"
             "    ~/.voiceclip/.venv/bin/pip install mlx-lm"
         )
-    if model_id not in _mlx_cache:
+    with _mlx_cache_lock:
+        # Re-check under the lock — another thread may have loaded it
+        cached = _mlx_cache.get(model_id)
+        if cached is not None:
+            return cached
         log.info("Loading local model: %s (first use — may download)", model_id)
         _mlx_cache[model_id] = load(model_id)
-    return _mlx_cache[model_id]
+        return _mlx_cache[model_id]
 
 
 def reset_mlx_cache():
     """Test hook — drop any cached local models."""
-    _mlx_cache.clear()
+    with _mlx_cache_lock:
+        _mlx_cache.clear()
 
 
 # ---------------------------------------------------------------------------

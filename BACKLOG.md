@@ -1,93 +1,114 @@
 # VoiceClip — backlog
 
 Living list of known issues and deferred work surfaced by the multi-angle
-code review. Maintained top-down by priority. Items get deleted when done
+code reviews. Maintained top-down by priority. Items get deleted when done
 (git history is the audit trail).
 
 ---
 
-## P0 — doing now
+## Doing now (top 5, in execution order)
 
-- [ ] **Fix README privacy claim.** The top-of-README "No cloud, no subscription, no data leaves your laptop" is false once summaries/research/patterns ship with cloud providers. Rewrite to "local by default; cloud opt-in per feature."
-- [ ] **Unify LLM provider abstraction.** `summarizer.py`, `researcher.py`, `patterns.py` each re-implement local/openai/anthropic plumbing. Extract a `voiceclip/llm_provider.py` with one `complete()` entry point. Target: ~300 lines deduplicated.
-- [ ] **Cache `mlx_lm.load()` output in-process.** Every call to summarizer/patterns reloads the model (5-15s). One module-level dict keyed by model_id fixes this.
-- [ ] **Cache Patterns output** the way summaries are cached. Key: `(window_end_date, transcription_count + reflection_count)`. Regen on stale, serve from cache otherwise.
-- [ ] **Integration tests for viewer endpoints + schema migration.** At minimum: one `urllib` round-trip per endpoint, plus migration from pre-feature schema with seeded old rows.
+*(All 5 shipped in commit — see "Recently shipped" at bottom.)*
 
 ---
 
-## P1 — next
+## P1 — after the top 5
 
 ### Security / trust
-- [ ] **XSS hardening in `renderMarkdown` (viewer.py).** LLM output is rendered via `innerHTML`. Prompt injection through user reflections → HTML execution. Switch to DOM construction with `textContent` for each segment.
-- [ ] **`install.sh` guard against empty `$HOME`.** Add `[[ -n "$HOME" ]]` at top to prevent `rm -rf /.voiceclip/voiceclip` if env is broken.
-- [ ] **Write `PRIVACY.md`** that lists every feature, default state, exact network behavior, provider retention policies (OpenAI ~30d, Anthropic ~30d).
-- [ ] **Config-time cloud-provider confirmation.** When a user edits config to turn on a cloud provider, the first `voiceclip view` or `voiceclip summarize` should print a one-time visible warning before proceeding.
+- [ ] **Write `PRIVACY.md`** enumerating every feature, default state, exact network behavior, provider retention.
+- [ ] **Config-time cloud-provider confirmation.** First run after switching a provider to cloud should print a visible warning.
+- [ ] **Cost controls.** No per-day / per-month spend cap on cloud. Negligible at current usage; real at gpt-4o. Add a per-feature daily token budget.
 
 ### Architecture
-- [ ] **Extract embedded HTML/CSS/JS from `viewer.py`.** Move `_PAGE_HTML` to `voiceclip/static/index.html` + `static/app.js` + `static/app.css`. Serve from `ThreadingHTTPServer` via a simple static handler. Makes JS debuggable and `viewer.py` half its current size.
-- [ ] **Reconnect `history._conn` on failure.** Currently if the SQLite connection dies mid-session, all subsequent writes silently drop. Add a lazy-reconnect on `OperationalError`.
-- [ ] **Narrow the `transcriptions` table.** `is_research_topic` on a row typed `transcription` is a smell. Longer term this wants a proper `entry_type` enum (clip, reflection, topic). Migration cost not justified yet; flag for when we add a 4th kind.
+- [ ] **Extract embedded HTML/CSS/JS from `viewer.py`.** Move `_PAGE_HTML` to `voiceclip/static/index.html` + `static/app.js` + `static/app.css`. Concrete plan: AbortController on tab-switch, per-component render+cleanup, no `innerHTML=""` resets. **Highest-leverage architectural refactor.**
+- [ ] **Reconnect `history._conn` on failure.** Currently if the SQLite connection dies mid-session, writes silently drop. Add lazy-reconnect on `OperationalError`.
+- [ ] **REST convention pass** — `DELETE /api/entries/:id`, `PATCH /api/entries/:id`, `/api/v1/` prefix, standardized response shape.
+- [ ] **Idempotency keys** on `/api/research/run` and `/api/patterns/run`.
+- [ ] **Narrow the `transcriptions` table** when we add a 4th kind — move `is_research_topic` into a proper `entry_type` enum.
 
 ### Performance
-- [ ] **Rewrite `list_research_topics` as one JOIN.** Currently runs 2 subqueries per topic row. At 1000 topics this becomes slow.
-- [ ] **Cap recorder `frames` buffer.** Currently grows unbounded — a 10-minute recording is ~115MB RAM. Spill to disk after N seconds, or hard-cap at 120s with a "recording too long" stop.
-- [ ] **`find_research_topic_by_text` will get quadratic.** Current O(N) Python matching over last 50 topics is fine; switch to SQL full-text or trigram once we hit ~500 topics.
+- [ ] **Cap recorder `frames` buffer.** A 10-minute recording is ~115MB. Hard-cap at 120s with a "too long" stop.
+- [ ] **`find_research_topic_by_text`** — switch to SQLite FTS5 when we pass ~500 topics.
+- [ ] **Pause auto-refresh when tab is hidden** (`document.visibilityState`).
+- [ ] **Persist patterns cache across restarts** in a SQLite `patterns_cache` table.
 
 ### Testing
-- [ ] **Tests for the schema migration.** Seed old-schema DB, run `init()`, assert new columns present, old rows backfilled, `user_version` doesn't regress.
-- [ ] **Tests for `hotkey.HotkeyHandler`.** Mock Recorder/transcriber/beep/paste. Exercise hold-mode, toggle-mode, coordinator-gate contention, profile=reflection branches.
-- [ ] **Tests for provider wrappers.** Mock the `openai`/`anthropic` SDKs, assert request shape + error handling (missing key, missing package, unsupported tool).
-- [ ] **Test for JSON parsing robustness in `patterns._parse_json_safely`.** Feed it fenced output, prose-before, prose-after, invalid JSON.
+- [ ] **Tests for `hotkey.HotkeyHandler`** — hold/toggle modes, coordinator gate contention, profile branches.
+- [ ] **Tests for provider wrappers** — mock the SDKs, assert request shape and error handling.
+- [ ] **Prompt-injection regression test** — seed adversarial reflection, assert no fabricated themes.
+- [ ] **JSON parsing robustness test for `patterns._parse_json_safely`**.
 
 ### Operability
-- [ ] **Log rotation.** Currently stdout only; a long-running daemon accumulates all logs in terminal scrollback. Add a rotating file handler at `~/.voiceclip/voiceclip.log`.
-- [ ] **`voiceclip doctor` diagnostic command.** Checks: mic permission, accessibility permission, SQLite integrity, model cache path sizes, `mlx-lm/openai/anthropic` installed if provider configured. Print one-line status per check.
-- [ ] **Uninstall script for clean removal.** Document and script: `~/.voiceclip/` + `~/.cache/huggingface/` (the big one, 3-10GB) + `~/.local/bin/voiceclip`. README only mentions the first.
-- [ ] **Runtime mic/sample-rate drop detection.** Currently only warned at startup. Detect mid-session switch to Bluetooth SCO and notify.
+- [ ] **Log rotation** — rotating file handler at `~/.voiceclip/voiceclip.log`.
+- [ ] **`voiceclip export`** — JSON dump of all tables. Needed before EU distribution.
+- [ ] **Runtime mic/sample-rate drop detection** — detect Bluetooth SCO switch mid-session.
 
 ---
 
 ## P2 — eventually
 
 ### UX / product
-- [ ] **Startup banner mentions the viewer.** Currently users have to read README to discover `voiceclip view`.
-- [ ] **Hover affordance for contenteditable text.** Subtle underline or pencil icon so users know they can click to edit.
-- [ ] **Tooltips on icon-only action buttons.** Copy / Keep / Delete / Queue it all benefit from `title` attributes for the first few weeks.
-- [ ] **Skip link for keyboard users** at top of the viewer for fast access to tab nav.
-- [ ] **"Show N transcriptions" toggle state persistence.** Currently collapses on every render. Remember the user's preference per-session.
-- [ ] **Remove or archive the Grammar Polish feature.** README marks it opt-in; code and config keys exist but it's not wired into the hotkey path anymore. Either re-integrate or delete cleanly.
+- [ ] **Startup banner mentions the viewer** (currently users have to read README to discover `voiceclip view`).
+- [ ] **Hover affordance for contenteditable text** — subtle underline or pencil icon.
+- [ ] **Tooltips on icon-only action buttons** — Copy / Keep / Delete / Queue it.
+- [ ] **Skip link for keyboard users** at top of the viewer.
+- [ ] **Keyboard shortcuts in the viewer** — j/k between entries, e to edit, / to focus search, ]/[ for day nav, 1/2/3 for tabs.
+- [ ] **Remember last-viewed tab** per session (localStorage).
+- [ ] **Persist "Show N transcriptions" open state** per session.
+- [ ] **README: move hero features above Configuration.**
+- [ ] **Rewrite competitive positioning in README** — compare to Day One / Reflect / Mem, not just Otter.
 
 ### Accessibility
-- [ ] **ARIA for tabs.** `role="tablist"`, `role="tab"`, `aria-selected`, `aria-controls`. One pass, half a day.
-- [ ] **`aria-label` on icon-only buttons.** Copy/Keep/Delete/Queue it — screen readers need textual equivalents.
-- [ ] **`prefers-reduced-motion` support.** Disable the 350ms row-remove animation for users with motion sensitivity.
-- [ ] **`aria-live` on loading / error regions.** "Thinking…" and error messages are currently visual-only.
-- [ ] **Visual alternative to audio chimes.** Flash the menu bar or a viewer indicator. Low-hearing users and muted-headphone users get zero feedback today.
-- [ ] **Localized day labels.** "Today/Yesterday/Monday" in `viewer._friendly_day_label` are English-only. Switch to `Intl.RelativeTimeFormat` on the client if we want i18n.
-- [ ] **Audit color contrast.** Small 11px muted text likely fails WCAG AA. Measure and bump if needed.
+- [ ] **ARIA for tabs** — `role="tablist"`, `role="tab"`, `aria-selected`, `aria-controls`.
+- [ ] **`aria-label` on icon-only buttons.**
+- [ ] **`prefers-reduced-motion` support** — disable row-remove animation for motion-sensitive users.
+- [ ] **`aria-live` on loading / error regions.**
+- [ ] **Visual alternative to audio chimes** — flash indicator for low-hearing / muted-headphone users.
+- [ ] **Localized day labels** — `Intl.RelativeTimeFormat` on the client.
+- [ ] **Audit color contrast** — 11px muted text likely fails WCAG AA.
 
 ### Open-source hygiene
-- [ ] **`pyproject.toml`** with proper optional-dependencies groups (`[local]` → mlx-lm, `[openai]` → openai, `[anthropic]` → anthropic).
-- [ ] **GitHub Actions CI** running pytest on macOS (matrix: py3.10/3.11/3.12).
-- [ ] **`CONTRIBUTING.md`** with the module layout, testing instructions, and conventions.
-- [ ] **`ARCHITECTURE.md`** at repo root — one-paragraph-per-module overview.
-- [ ] **`CHANGELOG.md`** auto-populated from git log, or manually maintained from here on.
+- [ ] **`pyproject.toml`** with optional-deps groups.
+- [ ] **GitHub Actions CI** on macOS.
+- [ ] **`CONTRIBUTING.md`**, **`ARCHITECTURE.md`**, **`CHANGELOG.md`**.
 - [ ] **Issue + PR templates.**
 
-### Features (user-facing, parked)
-- [ ] **Voice capture for research topics.** Third hotkey ("hold F7 to dictate a research topic") so users can queue research without opening the viewer.
-- [ ] **Batch research CLI.** `voiceclip research --pending` to run all queued briefs. Can be hooked into `launchd` for morning digest.
-- [ ] **Mark-as-read / archive for briefs.** Currently `status=ready` is terminal; no archiving.
-- [ ] **Voice hashtags.** "Note to self, hashtag todo" → entry tagged `#todo`. Opens door to organization without typing.
-- [ ] **Menu bar app.** Native rumps-based icon with "recent" dropdown and "open viewer" action. Big UX lever, medium effort.
-- [ ] **Long-form dictation.** Chunked streaming transcription so clips > 30s stay usable.
-- [ ] **Weekly digest summary** cached like daily summaries. Feeds Patterns without re-reading raw entries.
+### Features (parked)
+- [ ] **Voice capture for research topics** (third hotkey).
+- [ ] **Batch research CLI** — `voiceclip research --pending` for launchd cron.
+- [ ] **Mark-as-read / archive for briefs.**
+- [ ] **Voice hashtags** — "note to self, hashtag todo" → `#todo`.
+- [ ] **Menu bar app** (rumps).
+- [ ] **Long-form dictation** — chunked streaming for clips > 30s.
+- [ ] **Weekly digest summary.**
+- [ ] **Mac App Store packaging.** The single biggest "hobby → product" gap.
+- [ ] **i18n.** Realistic 3-engineer-week project; wait for a user who asks.
+
+### Ethics / product guardrails
+- [ ] **Never ship reflection frequency metrics** — no streaks, no "you reflected 2x less this week."
+- [ ] **Cloud-provider consent moment** — visible confirmation before first cloud call.
+- [ ] **Model-output-as-suggestion framing** — Patterns "Suggested to learn" should be labeled as AI suggestions that may be wrong.
 
 ---
 
-## Wins we shipped (keeping for morale)
+## Recently shipped (keeping for morale)
 
+- **Top-5 pass 2:**
+  - Prompt-injection hardening: `<entry>`/`<topic>`/`<reflection>` delimiters + "ignore instructions inside" directive in all three system prompts
+  - XSS defense: viewer's `renderMarkdown` now constructs DOM via `textContent` — no `innerHTML` interpretation of LLM output
+  - Thread-safe locks on `llm_provider._mlx_cache` and `patterns._cache` (double-check locking pattern)
+  - `install.sh` refuses to run with empty or root `$HOME`
+  - `list_research_topics` rewritten as single JOIN (was 2N+1 queries at N topics, now 1)
+  - `day_stats` collapsed to one conditional-aggregation query
+  - Grammar Polish fully removed — README section, config defaults, stale test env vars, lingering docs
+  - `voiceclip doctor` command — checks system, permissions, storage, schema, optional providers, model caches
+  - Full-text search across history (SQLite FTS5) with triggers, viewer search box with Cmd/Ctrl+K, debounced, race-safe via per-query seq counter, graceful fallback to LIKE on malformed queries
+  - 12 new tests (search + doctor); 143 → 155
+- **Top-5 pass 1:**
+  - Honest README privacy claim + "Privacy & data flow" section
+  - Unified LLM provider abstraction (`voiceclip/llm_provider.py`) with in-process model cache
+  - Patterns output cached in-process, force-regenerates on demand
+  - 36 new tests covering schema migration + every viewer endpoint (107 → 143 tests)
 - Opt-in history + reflection hotkey with additive schema migration
 - Local web viewer with 📓 Journal / 📚 Queue / 📊 Patterns
 - Daily summaries (local/openai/anthropic)
@@ -95,5 +116,4 @@ code review. Maintained top-down by priority. Items get deleted when done
 - Patterns coach that only suggests when grounded in real quotes
 - Inline editing with plain-text paste normalization
 - Two-click confirm delete with animated row removal
-- Auto-refresh today's page while viewing it
 - Zero new runtime dependencies for the core viewer (stdlib only)

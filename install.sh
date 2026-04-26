@@ -4,6 +4,14 @@
 
 set -e
 
+# Refuse to run without a real HOME — installer writes to $HOME/.voiceclip
+# and later does a `rm -rf "$INSTALL_DIR/voiceclip"`. An empty or unset
+# $HOME would make that `rm -rf /.voiceclip/voiceclip`.
+if [[ -z "${HOME:-}" || "$HOME" == "/" ]]; then
+    echo "❌ \$HOME is empty or root. Refusing to install. Exiting."
+    exit 1
+fi
+
 INSTALL_DIR="$HOME/.voiceclip"
 VENV_DIR="$INSTALL_DIR/.venv"
 
