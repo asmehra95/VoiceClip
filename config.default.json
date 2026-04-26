@@ -20,6 +20,20 @@
     "style": "descriptive"
   },
 
+  "research": {
+    "provider": "none",
+    "openai_model": "gpt-4o-mini",
+    "anthropic_model": "claude-haiku-4-5"
+  },
+
+  "patterns": {
+    "provider": "none",
+    "local_model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+    "openai_model": "gpt-4o-mini",
+    "anthropic_model": "claude-haiku-4-5",
+    "window_days": 7
+  },
+
   "personas": {
     "default": {
       "prompt": "",

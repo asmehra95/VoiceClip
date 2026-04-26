@@ -68,6 +68,10 @@ def _migrate(conn: sqlite3.Connection):
     _add_column(conn, "kind", "TEXT NOT NULL DEFAULT 'transcription'")
     _add_column(conn, "app_name", "TEXT")
     _add_column(conn, "window_title", "TEXT")
+    # Inline-edit tracking: nullable ISO timestamp, set only on edits
+    _add_column(conn, "edited_at", "TEXT")
+    # Research flag: entry is a topic for the research queue (not a normal clip)
+    _add_column(conn, "is_research_topic", "INTEGER NOT NULL DEFAULT 0")
     # Backfill any pre-existing NULL kinds (shouldn't happen given the DEFAULT,
     # but harmless and explicit).
     conn.execute(
@@ -76,6 +80,10 @@ def _migrate(conn: sqlite3.Connection):
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_kind_timestamp "
         "ON transcriptions(kind, timestamp)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_topic "
+        "ON transcriptions(is_research_topic, timestamp)"
     )
     # Daily summary cache (one row per day).
     conn.execute("""
@@ -89,6 +97,26 @@ def _migrate(conn: sqlite3.Connection):
             entry_count INTEGER NOT NULL
         )
     """)
+    # Research briefs: zero-or-many per entry. Status lets us queue, mark
+    # in-progress, record success/failure.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS research_briefs (
+            id INTEGER PRIMARY KEY,
+            entry_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            brief_text TEXT,
+            sources_json TEXT,
+            provider TEXT,
+            model TEXT,
+            used_web_search INTEGER NOT NULL DEFAULT 0,
+            generated_at TEXT,
+            error TEXT,
+            FOREIGN KEY (entry_id) REFERENCES transcriptions(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_brief_entry ON research_briefs(entry_id)"
+    )
 
 
 def _add_column(conn: sqlite3.Connection, name: str, ddl: str):
@@ -107,21 +135,26 @@ def save(
     kind: str = "transcription",
     app_name: str | None = None,
     window_title: str | None = None,
-):
-    """Save an entry to history. Thread-safe via write lock."""
+    is_research_topic: bool = False,
+) -> int | None:
+    """Save an entry to history. Thread-safe via write lock.
+
+    Returns the new entry's id on success, None if history isn't initialized.
+    """
     if _conn is None:
-        return
+        return None
     if kind not in VALID_KINDS:
         log.warning("Invalid kind '%s', defaulting to 'transcription'", kind)
         kind = "transcription"
     with _write_lock:
         try:
             from voiceclip.config import PERSONA, MODEL
-            _conn.execute(
+            cur = _conn.execute(
                 "INSERT INTO transcriptions "
                 "(timestamp, raw_text, formatted_text, duration_seconds, "
-                " persona, model, word_count, kind, app_name, window_title) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " persona, model, word_count, kind, app_name, window_title, "
+                " is_research_topic) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now().isoformat(timespec="seconds"),
                     raw_text,
@@ -133,11 +166,14 @@ def save(
                     kind,
                     app_name,
                     window_title,
+                    1 if is_research_topic else 0,
                 ),
             )
             _conn.commit()
+            return cur.lastrowid
         except Exception as e:
             log.warning("Failed to save to history: %s", e)
+            return None
 
 
 def cleanup(max_days: int, reflection_max_days: int = 0):
@@ -465,6 +501,9 @@ def list_days(limit: int = 90) -> list[str]:
 def entries_for_day(date: str, kind: str | None = None) -> list[dict]:
     """Return all entries for a YYYY-MM-DD day, oldest first (so the viewer
     can show the day in chronological order).
+
+    Research-queue topics are excluded from the day view — they live on their
+    own tab. If you want to include them, use `entries_for_day_all`.
     """
     if _conn is None:
         return []
@@ -475,9 +514,10 @@ def entries_for_day(date: str, kind: str | None = None) -> list[dict]:
         params = (*params, kind)
     rows = _conn.execute(
         f"SELECT id, timestamp, formatted_text, duration_seconds, "
-        f"       kind, app_name, word_count "
+        f"       kind, app_name, word_count, edited_at "
         f"FROM transcriptions "
         f"WHERE timestamp >= ? AND timestamp < ?{kclause} "
+        f"  AND is_research_topic = 0 "
         f"ORDER BY id ASC",
         params,
     ).fetchall()
@@ -490,29 +530,33 @@ def entries_for_day(date: str, kind: str | None = None) -> list[dict]:
             "kind": r[4],
             "app_name": r[5],
             "word_count": r[6],
+            "edited_at": r[7],
         }
         for r in rows
     ]
 
 
 def day_stats(date: str) -> dict:
-    """Return counts and top-apps for a single day."""
+    """Return counts and top-apps for a single day. Excludes research topics."""
     if _conn is None:
         return {"transcriptions": 0, "reflections": 0, "apps": []}
     trow = _conn.execute(
         "SELECT COUNT(*) FROM transcriptions "
-        "WHERE timestamp >= ? AND timestamp < ? AND kind = 'transcription'",
+        "WHERE timestamp >= ? AND timestamp < ? AND kind = 'transcription' "
+        "  AND is_research_topic = 0",
         (f"{date}T", f"{date}T\uffff"),
     ).fetchone()
     rrow = _conn.execute(
         "SELECT COUNT(*) FROM transcriptions "
-        "WHERE timestamp >= ? AND timestamp < ? AND kind = 'reflection'",
+        "WHERE timestamp >= ? AND timestamp < ? AND kind = 'reflection' "
+        "  AND is_research_topic = 0",
         (f"{date}T", f"{date}T\uffff"),
     ).fetchone()
     app_rows = _conn.execute(
         "SELECT COALESCE(NULLIF(app_name, ''), 'unknown') AS app, COUNT(*) AS n "
         "FROM transcriptions "
         "WHERE timestamp >= ? AND timestamp < ? "
+        "  AND is_research_topic = 0 "
         "GROUP BY app ORDER BY n DESC LIMIT 6",
         (f"{date}T", f"{date}T\uffff"),
     ).fetchall()
@@ -586,3 +630,274 @@ def count_for_day(date: str) -> int:
         (f"{date}T", f"{date}T\uffff"),
     ).fetchone()
     return row[0] if row else 0
+
+
+
+# ---------------------------------------------------------------------------
+# Inline editing
+# ---------------------------------------------------------------------------
+
+def update_text(entry_id: int, new_text: str) -> dict | None:
+    """Update an entry's formatted_text. Sets edited_at timestamp.
+
+    Returns {'id', 'text', 'edited_at', 'word_count'} on success, None if
+    the entry doesn't exist or history isn't initialized.
+    """
+    if _conn is None:
+        return None
+    existing = _conn.execute(
+        "SELECT id FROM transcriptions WHERE id = ?", (entry_id,)
+    ).fetchone()
+    if not existing:
+        return None
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    word_count = len(new_text.split())
+    with _write_lock:
+        try:
+            _conn.execute(
+                "UPDATE transcriptions SET formatted_text = ?, "
+                "word_count = ?, edited_at = ? WHERE id = ?",
+                (new_text, word_count, now_iso, entry_id),
+            )
+            _conn.commit()
+        except Exception as e:
+            log.warning("Failed to update entry %s: %s", entry_id, e)
+            return None
+    return {
+        "id": entry_id,
+        "text": new_text,
+        "edited_at": now_iso,
+        "word_count": word_count,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Research queue
+# ---------------------------------------------------------------------------
+
+def create_research_topic(text: str, *, app_name: str | None = None) -> int | None:
+    """Create a typed-in research topic as a new entry (kind=transcription,
+    is_research_topic=True, zero duration). Returns new id."""
+    if _conn is None:
+        return None
+    text = (text or "").strip()
+    if not text:
+        return None
+    return save(
+        text, text, 0.0,
+        kind="transcription",
+        app_name=app_name,
+        is_research_topic=True,
+    )
+
+
+def list_research_topics(status_filter: str | None = None, limit: int = 100) -> list[dict]:
+    """Return research topics with the status of their latest brief.
+
+    status_filter: None = all; 'pending' = no brief yet OR failed;
+                   'ready' = at least one completed brief; 'read' = TBD later.
+    """
+    if _conn is None:
+        return []
+    rows = _conn.execute(
+        """
+        SELECT
+          t.id, t.timestamp, t.formatted_text, t.app_name,
+          (SELECT status FROM research_briefs b
+             WHERE b.entry_id = t.id
+             ORDER BY b.id DESC LIMIT 1) AS latest_status,
+          (SELECT COUNT(*) FROM research_briefs b
+             WHERE b.entry_id = t.id AND b.status = 'done') AS brief_count
+        FROM transcriptions t
+        WHERE t.is_research_topic = 1
+        ORDER BY t.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    topics = []
+    for r in rows:
+        latest = r[4]
+        brief_count = r[5] or 0
+        if brief_count > 0:
+            status = "ready"
+        elif latest == "running":
+            status = "running"
+        elif latest == "failed":
+            status = "failed"
+        else:
+            status = "pending"
+        if status_filter and status != status_filter:
+            continue
+        topics.append({
+            "id": r[0],
+            "timestamp": r[1],
+            "text": r[2],
+            "app_name": r[3],
+            "status": status,
+            "brief_count": brief_count,
+        })
+    return topics
+
+
+def latest_brief(entry_id: int) -> dict | None:
+    """Return the most recent completed brief for an entry, or None."""
+    if _conn is None:
+        return None
+    row = _conn.execute(
+        "SELECT id, brief_text, sources_json, provider, model, "
+        "       used_web_search, generated_at "
+        "FROM research_briefs "
+        "WHERE entry_id = ? AND status = 'done' "
+        "ORDER BY id DESC LIMIT 1",
+        (entry_id,),
+    ).fetchone()
+    if not row:
+        return None
+    import json as _json
+    sources = []
+    if row[2]:
+        try:
+            sources = _json.loads(row[2])
+        except Exception:
+            sources = []
+    return {
+        "id": row[0],
+        "text": row[1],
+        "sources": sources,
+        "provider": row[3],
+        "model": row[4],
+        "used_web_search": bool(row[5]),
+        "generated_at": row[6],
+    }
+
+
+def save_brief(
+    entry_id: int,
+    *,
+    status: str,
+    brief_text: str | None = None,
+    sources: list | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    used_web_search: bool = False,
+    error: str | None = None,
+) -> int | None:
+    """Insert a research brief row. Returns the new brief id."""
+    if _conn is None:
+        return None
+    import json as _json
+    with _write_lock:
+        try:
+            cur = _conn.execute(
+                "INSERT INTO research_briefs "
+                "(entry_id, status, brief_text, sources_json, provider, model, "
+                " used_web_search, generated_at, error) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entry_id, status, brief_text,
+                    _json.dumps(sources) if sources else None,
+                    provider, model,
+                    1 if used_web_search else 0,
+                    datetime.now().isoformat(timespec="seconds"),
+                    error,
+                ),
+            )
+            _conn.commit()
+            return cur.lastrowid
+        except Exception as e:
+            log.warning("Failed to save brief: %s", e)
+            return None
+
+
+def get_topic(entry_id: int) -> dict | None:
+    """Return a research topic (entry_id must be a research topic)."""
+    if _conn is None:
+        return None
+    row = _conn.execute(
+        "SELECT id, timestamp, formatted_text, app_name, is_research_topic "
+        "FROM transcriptions WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
+    if not row or not row[4]:
+        return None
+    return {
+        "id": row[0],
+        "timestamp": row[1],
+        "text": row[2],
+        "app_name": row[3],
+    }
+
+
+
+# ---------------------------------------------------------------------------
+# Patterns view support
+# ---------------------------------------------------------------------------
+
+def find_research_topic_by_text(text: str) -> dict | None:
+    """Return the most recent research topic whose formatted_text (first ~80
+    chars, case-insensitive) matches the given text. Used by the Patterns
+    'Queue it' button to avoid creating duplicate topics.
+    """
+    if _conn is None:
+        return None
+    needle = (text or "").strip().lower()
+    if not needle:
+        return None
+    # Cheap substring / prefix match — we don't need exact equality because
+    # "CRDTs" and "CRDTs " should be considered the same.
+    rows = _conn.execute(
+        "SELECT id, timestamp, formatted_text FROM transcriptions "
+        "WHERE is_research_topic = 1 "
+        "ORDER BY id DESC LIMIT 50"
+    ).fetchall()
+    for r in rows:
+        existing = (r[2] or "").strip().lower()
+        # Match if one is a prefix of the other, limited to first 80 chars.
+        a, b = existing[:80], needle[:80]
+        if a == b or a.startswith(b) or b.startswith(a):
+            return {"id": r[0], "timestamp": r[1], "text": r[2]}
+    return None
+
+
+def entries_for_window(start_date: str, end_date: str, kind: str | None = None) -> list[dict]:
+    """Return entries in [start_date, end_date) — oldest first. Excludes
+    research topics. Used to feed the patterns prompt.
+    """
+    if _conn is None:
+        return []
+    params: tuple = (f"{start_date}T", f"{end_date}T")
+    kclause = ""
+    if kind is not None:
+        kclause = " AND kind = ?"
+        params = (*params, kind)
+    rows = _conn.execute(
+        f"SELECT id, timestamp, formatted_text, duration_seconds, "
+        f"       kind, app_name, word_count "
+        f"FROM transcriptions "
+        f"WHERE timestamp >= ? AND timestamp < ? AND is_research_topic = 0{kclause} "
+        f"ORDER BY id ASC",
+        params,
+    ).fetchall()
+    return [
+        {
+            "id": r[0], "timestamp": r[1], "text": r[2],
+            "duration": r[3], "kind": r[4],
+            "app_name": r[5], "word_count": r[6],
+        }
+        for r in rows
+    ]
+
+
+def app_distribution_for_window(start_date: str, end_date: str, top_n: int = 8) -> list[dict]:
+    """Return top apps by dictation count across the window."""
+    if _conn is None:
+        return []
+    rows = _conn.execute(
+        "SELECT COALESCE(NULLIF(app_name, ''), 'unknown') AS app, COUNT(*) AS n "
+        "FROM transcriptions "
+        "WHERE timestamp >= ? AND timestamp < ? AND is_research_topic = 0 "
+        "GROUP BY app ORDER BY n DESC LIMIT ?",
+        (f"{start_date}T", f"{end_date}T", top_n),
+    ).fetchall()
+    return [{"name": r[0], "count": r[1]} for r in rows]

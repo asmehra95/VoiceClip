@@ -131,6 +131,20 @@ SUMMARIES_OPENAI_MODEL = "gpt-4o-mini"
 SUMMARIES_ANTHROPIC_MODEL = "claude-haiku-4-5"
 SUMMARIES_STYLE = "descriptive"  # "descriptive" | "reflective"
 
+# Research — queue-based research assistant. Off by default.
+# Provider: "none" | "openai" | "anthropic"
+RESEARCH_PROVIDER = "none"
+RESEARCH_OPENAI_MODEL = "gpt-4o-mini"
+RESEARCH_ANTHROPIC_MODEL = "claude-haiku-4-5"
+
+# Patterns — longitudinal coach looking across your recent history.
+# Provider: "none" | "local" | "openai" | "anthropic"
+PATTERNS_PROVIDER = "none"
+PATTERNS_LOCAL_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+PATTERNS_OPENAI_MODEL = "gpt-4o-mini"
+PATTERNS_ANTHROPIC_MODEL = "claude-haiku-4-5"
+PATTERNS_WINDOW_DAYS = 7
+
 # Populated by load() — the merged dictionary (global + persona)
 DICTIONARY: dict[str, str] = {}
 
@@ -169,6 +183,9 @@ def load():
     global REFLECTION_HOTKEY, REFLECTION_HOTKEY_MODE, REFLECTION_MAX_DAYS
     global SUMMARIES_PROVIDER, SUMMARIES_LOCAL_MODEL
     global SUMMARIES_OPENAI_MODEL, SUMMARIES_ANTHROPIC_MODEL, SUMMARIES_STYLE
+    global RESEARCH_PROVIDER, RESEARCH_OPENAI_MODEL, RESEARCH_ANTHROPIC_MODEL
+    global PATTERNS_PROVIDER, PATTERNS_LOCAL_MODEL, PATTERNS_OPENAI_MODEL
+    global PATTERNS_ANTHROPIC_MODEL, PATTERNS_WINDOW_DAYS
 
     _ensure_config_file()
 
@@ -271,6 +288,56 @@ def load():
     if SUMMARIES_STYLE not in ("descriptive", "reflective"):
         log.warning("Invalid summaries.style '%s', using 'descriptive'", SUMMARIES_STYLE)
         SUMMARIES_STYLE = "descriptive"
+
+    # Research block
+    research_cfg = cfg.get("research", {})
+    if not isinstance(research_cfg, dict):
+        research_cfg = {}
+    RESEARCH_PROVIDER = os.environ.get(
+        "VOICECLIP_RESEARCH_PROVIDER",
+        research_cfg.get("provider", "none"),
+    )
+    if RESEARCH_PROVIDER not in ("none", "openai", "anthropic"):
+        log.warning("Invalid research.provider '%s', using 'none'", RESEARCH_PROVIDER)
+        RESEARCH_PROVIDER = "none"
+    RESEARCH_OPENAI_MODEL = os.environ.get(
+        "VOICECLIP_RESEARCH_OPENAI_MODEL",
+        research_cfg.get("openai_model", "gpt-4o-mini"),
+    )
+    RESEARCH_ANTHROPIC_MODEL = os.environ.get(
+        "VOICECLIP_RESEARCH_ANTHROPIC_MODEL",
+        research_cfg.get("anthropic_model", "claude-haiku-4-5"),
+    )
+
+    # Patterns block — longitudinal LLM look across your recent history
+    patterns_cfg = cfg.get("patterns", {})
+    if not isinstance(patterns_cfg, dict):
+        patterns_cfg = {}
+    PATTERNS_PROVIDER = os.environ.get(
+        "VOICECLIP_PATTERNS_PROVIDER",
+        patterns_cfg.get("provider", "none"),
+    )
+    if PATTERNS_PROVIDER not in ("none", "local", "openai", "anthropic"):
+        log.warning("Invalid patterns.provider '%s', using 'none'", PATTERNS_PROVIDER)
+        PATTERNS_PROVIDER = "none"
+    PATTERNS_LOCAL_MODEL = os.environ.get(
+        "VOICECLIP_PATTERNS_LOCAL_MODEL",
+        patterns_cfg.get("local_model", "mlx-community/Qwen2.5-7B-Instruct-4bit"),
+    )
+    PATTERNS_OPENAI_MODEL = os.environ.get(
+        "VOICECLIP_PATTERNS_OPENAI_MODEL",
+        patterns_cfg.get("openai_model", "gpt-4o-mini"),
+    )
+    PATTERNS_ANTHROPIC_MODEL = os.environ.get(
+        "VOICECLIP_PATTERNS_ANTHROPIC_MODEL",
+        patterns_cfg.get("anthropic_model", "claude-haiku-4-5"),
+    )
+    try:
+        PATTERNS_WINDOW_DAYS = int(patterns_cfg.get("window_days", 7))
+    except (ValueError, TypeError):
+        PATTERNS_WINDOW_DAYS = 7
+    if PATTERNS_WINDOW_DAYS < 1:
+        PATTERNS_WINDOW_DAYS = 7
 
     # Resolve persona
     personas = cfg.get("personas", {})
