@@ -85,7 +85,8 @@ def research_topic(entry_id: int) -> dict | None:
     """Generate a research brief for a topic entry. Stores in `research_briefs`.
 
     Returns the brief dict on success. Raises RuntimeError on provider errors
-    (missing key, missing package, etc).
+    with the real underlying message (invalid model, missing key, etc) so the
+    viewer can surface something actionable to the user.
     """
     provider = config.RESEARCH_PROVIDER
     if provider == "none":
@@ -112,15 +113,20 @@ def research_topic(entry_id: int) -> dict | None:
 
     try:
         text, sources, used_web = _run(provider, topic["text"], model_id)
-    except RuntimeError:
-        history.save_brief(entry_id, status="failed", provider=provider, model=model_id,
-                           error="configuration error")
+    except RuntimeError as e:
+        # Missing key / missing package errors raised by llm_provider — these
+        # already have good user-facing messages. Preserve them.
+        history.save_brief(entry_id, status="failed", provider=provider,
+                           model=model_id, error=str(e))
         raise
     except Exception as e:
+        # Anything else (OpenAI API errors like 404 model_not_found, rate
+        # limits, transient network) — surface the real provider message.
         log.exception("Research call failed")
-        history.save_brief(entry_id, status="failed", provider=provider, model=model_id,
-                           error=str(e))
-        raise RuntimeError(f"Research failed: {e}")
+        msg = _humanize_provider_error(e, provider, model_id)
+        history.save_brief(entry_id, status="failed", provider=provider,
+                           model=model_id, error=msg)
+        raise RuntimeError(msg)
 
     history.save_brief(
         entry_id,
@@ -132,6 +138,36 @@ def research_topic(entry_id: int) -> dict | None:
         used_web_search=used_web,
     )
     return history.latest_brief(entry_id)
+
+
+def _humanize_provider_error(err: Exception, provider: str, model_id: str) -> str:
+    """Turn a provider SDK exception into a single actionable line.
+
+    The OpenAI / Anthropic SDKs raise classes that carry useful info (message,
+    status_code, code). We pick the most useful string and prepend a hint when
+    we recognize a specific failure mode.
+    """
+    raw = str(err).strip() or repr(err)
+    # Common case: bad model string → 404 with "model" in the message
+    low = raw.lower()
+    if "model" in low and ("not found" in low or "does not exist" in low
+                           or "404" in low or "invalid_request" in low):
+        return (
+            f"Model '{model_id}' was rejected by {provider}. "
+            f"Check research.openai_model / research.anthropic_model in your "
+            f"config — use a real model name (e.g. gpt-4o-mini, gpt-5, "
+            f"claude-haiku-4-5). Original: {raw[:200]}"
+        )
+    if "api key" in low or "authenticat" in low or "unauthorized" in low or "401" in low:
+        env_var = "OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY"
+        return (
+            f"Authentication failed with {provider}. Make sure {env_var} is "
+            f"set in the shell where you ran `voiceclip view`. "
+            f"Original: {raw[:200]}"
+        )
+    if "rate" in low and "limit" in low:
+        return f"{provider} rate-limited the request. Try again in a minute. Original: {raw[:200]}"
+    return f"{provider} error: {raw[:300]}"
 
 
 def network_warning() -> str | None:

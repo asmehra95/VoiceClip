@@ -518,6 +518,33 @@
     // Optimistically mark the topic running
     wrap.classList.remove("pending", "failed", "ready");
     wrap.classList.add("running");
+
+    // Live progress panel: spinner + elapsed seconds + model hint.
+    // Replaces any existing brief/error block while the call is in flight,
+    // so the user always sees *something* moving. Research can take 10-60s.
+    const existing = wrap.querySelector(".brief");
+    if (existing) existing.remove();
+    const elapsed = el("span", {class:"progress-elapsed"}, "0s");
+    const progress = el("div", {class:"research-progress"}, [
+      el("span", {class:"spinner"}),
+      el("span", null, "Researching"),
+      elapsed,
+      el("span", {class:"progress-hint"},
+        "— the model may search the web; this usually takes 10-30 seconds"),
+    ]);
+    wrap.appendChild(progress);
+
+    const t0 = Date.now();
+    const tick = setInterval(() => {
+      const s = Math.round((Date.now() - t0) / 1000);
+      elapsed.textContent = `${s}s`;
+      // After 90s something is clearly wrong; the user can cancel by reloading
+      if (s >= 90) {
+        elapsed.textContent = `${s}s — this is longer than usual`;
+        elapsed.style.color = "#c44";
+      }
+    }, 500);
+
     try {
       const r = await fetch("/api/research/run", {
         method: "POST",
@@ -525,26 +552,38 @@
         body: JSON.stringify({id}),
       });
       const data = await r.json();
+      clearInterval(tick);
+      progress.remove();
       if (!r.ok) {
         wrap.classList.remove("running");
         wrap.classList.add("failed");
         btn.disabled = false;
         btn.textContent = prev;
-        const err = el("div", {class:"brief",
-          style:"color:#c44; white-space:pre-line"}, data.error || "failed");
-        // Replace any existing brief with the error
-        const existing = wrap.querySelector(".brief");
-        if (existing) existing.parentNode.replaceChild(err, existing);
-        else wrap.appendChild(err);
+        const msg = data.error || "Research failed (no error message)";
+        const err = el("div", {class:"research-error"}, [
+          el("strong", null, "Research failed."),
+          el("div", {class:"error-body", style:"white-space:pre-line"}, msg),
+          el("div", {class:"error-hint"},
+            "Check ~/.voiceclip/config.json (research.openai_model) or your " +
+            "OPENAI_API_KEY env var. Run `voiceclip doctor` to verify setup."),
+        ]);
+        wrap.appendChild(err);
         return;
       }
       // Reload the whole queue so counts + status line refresh consistently
       loadQueue();
     } catch(e) {
+      clearInterval(tick);
+      progress.remove();
       wrap.classList.remove("running");
       wrap.classList.add("failed");
       btn.disabled = false;
       btn.textContent = prev;
+      const err = el("div", {class:"research-error"}, [
+        el("strong", null, "Research failed."),
+        el("div", {class:"error-body"}, e.message || "Network error"),
+      ]);
+      wrap.appendChild(err);
     }
   }
 

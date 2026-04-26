@@ -778,3 +778,45 @@
 }
 .modal button:hover { border-color: var(--muted); }
 .modal button.primary:hover { opacity: 0.92; }
+
+
+/* Research in-progress + error blocks */
+.research-progress {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-top: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.research-progress .progress-elapsed {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  font-weight: 600;
+}
+.research-progress .progress-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.research-error {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-top: 1px dashed var(--border);
+  color: #c44;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.research-error .error-body {
+  color: var(--text);
+  margin-top: 6px;
+  font-weight: 500;
+}
+.research-error .error-hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 8px;
+}
