@@ -590,3 +590,191 @@
     cursor: pointer;
     margin-top: 14px;
   }
+
+
+/* Settings view */
+.setting-group {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px 18px;
+  margin: 16px 0;
+}
+.setting-group > h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin: 16px 0 12px;
+  font-weight: 600;
+}
+.setting-row {
+  display: grid;
+  grid-template-columns: 220px 1fr 24px;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.setting-row:first-of-type { border-top: 0; }
+.setting-label {
+  font-size: 14px;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.setting-label .desc {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: normal;
+}
+.setting-row .restart-pill {
+  font-size: 9.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: var(--bar);
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 6px;
+  vertical-align: 1px;
+  font-weight: 500;
+}
+.setting-input select,
+.setting-input input[type="text"],
+.setting-input input[type="number"] {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+  color-scheme: light dark;
+}
+.setting-input select:focus,
+.setting-input input[type="text"]:focus,
+.setting-input input[type="number"]:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+.setting-input label.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}
+.setting-input label.toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+.setting-status {
+  font-size: 10px;
+  color: var(--accent);
+  text-align: right;
+  font-weight: 600;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.setting-status.shown { opacity: 1; }
+
+.restart-banner {
+  background: var(--reflection-bg);
+  border: 1px solid var(--reflection-border);
+  border-left: 3px solid #e1b345;
+  color: var(--text);
+  padding: 12px 18px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.system-info {
+  margin-top: 28px;
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+.system-info > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 600;
+  user-select: none;
+}
+.system-info > summary::-webkit-details-marker { display: none; }
+.system-info[open] > summary { margin-bottom: 14px; }
+.system-info .sys-row {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.system-info .sys-row .sys-val {
+  color: var(--text);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* Confirm modal for cloud-provider switches */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px 26px;
+  max-width: 480px;
+  width: 90%;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+}
+.modal h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.modal .modal-body {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+  margin-bottom: 18px;
+}
+.modal .modal-body strong { color: var(--text); }
+.modal .modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.modal button {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.modal button.primary {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.modal button:hover { border-color: var(--muted); }
+.modal button.primary:hover { opacity: 0.92; }

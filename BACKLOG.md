@@ -90,6 +90,10 @@ code reviews. Maintained top-down by priority. Items get deleted when done
 
 ## Recently shipped (keeping for morale)
 
+- **Usability pass 2:**
+  - ⚙️ Settings tab in the viewer. Live reads `/api/settings` (whitelist-validated), patches `/api/settings/update` with per-field type + range checks. Save-on-change (debounced for text, instant for toggles/selects). "Saved" pill flashes inline. Yellow restart-required banner when a hotkey-like change needs a daemon reboot. Cloud-provider flips gate through a confirm modal that mirrors the consent-banner language. Collapsible System section at the bottom surfaces DB path, DB size, config path, HF cache size.
+  - Shared `voiceclip/config_io.py` — one source of truth for reading and writing the config file (shallow-merge, 0600, corrupt-file tolerant). Onboarding + Settings both use it.
+  - 21 new tests (settings GET/POST + validation rejections + merge semantics + system info). 179 → 200.
 - **Usability pass 1:**
   - First-run onboarding flow (`voiceclip onboard`). 5-step keyboard-driven walkthrough, keyboard-only, no deps. Teaches dictation, checks permissions, offers reflections/toggle-mode/history/summaries as opt-ins, writes accepted choices directly into `~/.voiceclip/config.json`. Runs automatically on first launch, skippable with Enter, gated by TTY. 14 new tests.
 - **Top-3 pass 3:**

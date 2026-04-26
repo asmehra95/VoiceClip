@@ -13,8 +13,8 @@ walkthrough that:
 
 Design principles:
   - Every step is skippable with Enter. Nothing is required.
-  - Every opt-in writes to the real ~/.voiceclip/config.json so the choice
-    persists without the user editing JSON.
+  - Every opt-in writes to the real ~/.voiceclip/config.json via the
+    shared patcher in voiceclip.config_io so the choice persists.
   - The onboarding itself captures nothing, sends nothing, and never errors
     the startup path — failures print one line and move on.
   - Zero new dependencies; pure stdlib + what VoiceClip already has.
@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 from voiceclip import config
+from voiceclip.config_io import write_config_patch
 
 log = logging.getLogger(__name__)
 
@@ -112,35 +113,8 @@ def _pause(msg: str = "Press Enter to continue, or 's' to skip this step"):
 # ---------------------------------------------------------------------------
 
 def _write_config_patch(patch: dict) -> bool:
-    """Merge `patch` into the user's config.json. Returns True on success.
-
-    Shallow merge — nested dicts (e.g. "summaries": {...}) are merged one
-    level deep so we don't clobber unrelated provider settings.
-    """
-    path = Path(config.CONFIG_PATH)
-    current: dict = {}
-    if path.exists():
-        try:
-            current = json.loads(path.read_text())
-            if not isinstance(current, dict):
-                current = {}
-        except (OSError, json.JSONDecodeError):
-            current = {}
-
-    for k, v in patch.items():
-        if isinstance(v, dict) and isinstance(current.get(k), dict):
-            current[k] = {**current[k], **v}
-        else:
-            current[k] = v
-
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(current, indent=2))
-        os.chmod(path, 0o600)
-        return True
-    except OSError as e:
-        log.warning("Could not update config: %s", e)
-        return False
+    """Thin wrapper for backward compat with existing tests."""
+    return write_config_patch(patch)
 
 
 # ---------------------------------------------------------------------------

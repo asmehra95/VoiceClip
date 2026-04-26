@@ -22,6 +22,7 @@
     <button class="tab active" data-view="journal">📓 Journal</button>
     <button class="tab" data-view="queue">📚 Queue</button>
     <button class="tab" data-view="patterns">📊 Patterns</button>
+    <button class="tab" data-view="settings">⚙️ Settings</button>
   </div>
 
   <div id="journal_view">
@@ -64,7 +65,22 @@
     <div class="queue-hint" id="patterns_hint"></div>
     <section id="patterns_slot"></section>
   </div>
+
+  <div id="settings_view" style="display:none">
+    <div class="dayline">
+      <h2>Settings</h2>
+      <div class="stats" id="settings_status"></div>
+    </div>
+    <div id="settings_restart_banner" class="restart-banner" style="display:none"></div>
+    <section id="settings_slot"></section>
+    <details id="settings_system" class="system-info">
+      <summary>System</summary>
+      <div id="settings_system_body"></div>
+    </details>
+  </div>
 </div>
+
+<div id="modal_root"></div>
 
 <script src="/static/app.js" defer></script>
 </body>

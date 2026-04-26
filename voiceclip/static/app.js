@@ -122,6 +122,7 @@
     document.getElementById("journal_view").style.display = view === "journal" ? "" : "none";
     document.getElementById("queue_view").style.display = view === "queue" ? "" : "none";
     document.getElementById("patterns_view").style.display = view === "patterns" ? "" : "none";
+    document.getElementById("settings_view").style.display = view === "settings" ? "" : "none";
     document.getElementById("journal_nav").style.visibility = view === "journal" ? "" : "hidden";
     // Clear stale search on tab-switch
     if (view !== "journal") {
@@ -132,6 +133,7 @@
     }
     if (view === "queue") loadQueue();
     else if (view === "patterns") loadPatterns();
+    else if (view === "settings") loadSettings();
     else load(state.date);
   }
 
@@ -814,6 +816,294 @@
     }
     // Keep original order (fts rank, then id desc — server-side)
     entries.forEach(e => slot.appendChild(renderEntry(e)));
+  }
+
+  // ---------- Settings ----------
+  //
+  // Loads the schema + current values from /api/settings, renders one input
+  // per setting grouped by category, and commits changes on change (with
+  // debounce for text inputs). Cloud-provider flips gate through a confirm
+  // modal that mirrors the consent banner's language.
+
+  // Plain-language labels and descriptions. Keyed by dotted config key.
+  const SETTING_COPY = {
+    "hotkey":                  ["Hotkey", "Key to hold/press for dictation"],
+    "hotkey_mode":             ["Hotkey mode", "Hold to record, or tap to toggle"],
+    "english_only":            ["English only", "Faster and smaller if all your dictation is English"],
+    "reflection_hotkey":       ["Reflection hotkey", "Separate key for saving a thought (not pasted)"],
+    "reflection_hotkey_mode":  ["Reflection hotkey mode", "Hold or toggle for reflections specifically"],
+    "window_title_capture":    ["Capture window titles", "Stored alongside each entry. Uses Accessibility."],
+    "history":                 ["Save dictations to a journal", "Enables the Journal/Queue/Patterns tabs"],
+    "summaries.provider":      ["Daily summary provider", "'local' runs on your Mac; 'openai'/'anthropic' send a day's entries"],
+    "summaries.local_model":   ["Local model", "e.g. mlx-community/Qwen2.5-7B-Instruct-4bit"],
+    "summaries.openai_model":  ["OpenAI model", null],
+    "summaries.anthropic_model": ["Anthropic model", null],
+    "summaries.style":         ["Summary style", "Descriptive (what you did) or Reflective (what you were thinking)"],
+    "research.provider":       ["Research provider", "Cloud only. Sends the topic text (and possibly to web search)."],
+    "research.openai_model":   ["OpenAI model", null],
+    "research.anthropic_model":["Anthropic model", null],
+    "patterns.provider":       ["Patterns provider", "Reads up to a week of entries. 'local' stays on your Mac."],
+    "patterns.local_model":    ["Local model", null],
+    "patterns.openai_model":   ["OpenAI model", null],
+    "patterns.anthropic_model":["Anthropic model", null],
+    "patterns.window_days":    ["Window (days)", "How many days of history to read"],
+  };
+
+  // Cloud-provider confirm copy, keyed by the dotted setting key.
+  // Used by confirmCloudSwitch().
+  const CLOUD_DISCLOSURES = {
+    "summaries.provider": "Your entries for each day (every transcription and reflection) will be sent to this provider when a summary is generated.",
+    "research.provider":  "The research topic you dictate or type will be sent to this provider. If the model uses its web search tool, that topic also goes to the search backend.",
+    "patterns.provider":  "Up to a week of your reflections and daily summaries will be sent in a single prompt.",
+  };
+
+  let _settingsCache = null;
+
+  async function loadSettings() {
+    try {
+      const r = await fetch("/api/settings");
+      const data = await r.json();
+      _settingsCache = data;
+      renderSettings(data);
+    } catch(e) {
+      document.getElementById("settings_slot").innerHTML = "";
+      document.getElementById("settings_slot").appendChild(
+        el("div", {class:"empty"}, "Could not load settings.")
+      );
+    }
+  }
+
+  function renderSettings(data) {
+    const slot = document.getElementById("settings_slot");
+    slot.innerHTML = "";
+    document.getElementById("settings_status").textContent =
+      "Changes save automatically. Some require restarting voiceclip.";
+
+    // Group by schema.group
+    const groups = {};
+    for (const key in data.schema) {
+      const g = data.schema[key].group;
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(key);
+    }
+
+    const order = ["Dictation", "Reflections", "Journal", "Summaries", "Research", "Patterns"];
+    for (const gname of order) {
+      if (!groups[gname]) continue;
+      const groupEl = el("div", {class:"setting-group"}, [
+        el("h3", null, gname),
+      ]);
+      for (const key of groups[gname]) {
+        groupEl.appendChild(renderSettingRow(key, data.schema[key], data.values[key]));
+      }
+      slot.appendChild(groupEl);
+    }
+
+    renderSystemInfo(data.system || {});
+  }
+
+  function renderSettingRow(key, schema, currentValue) {
+    const [label, desc] = SETTING_COPY[key] || [key, null];
+    const row = el("div", {class:"setting-row"});
+    row.dataset.key = key;
+
+    const labelEl = el("div", {class:"setting-label"}, [
+      el("span", null, [
+        label,
+        schema.restart_required
+          ? el("span", {class:"restart-pill"}, "restart")
+          : null,
+      ]),
+      desc ? el("span", {class:"desc"}, desc) : null,
+    ]);
+    row.appendChild(labelEl);
+
+    const inputWrap = el("div", {class:"setting-input"});
+    inputWrap.appendChild(buildSettingInput(key, schema, currentValue));
+    row.appendChild(inputWrap);
+
+    const status = el("div", {class:"setting-status"}, "");
+    row.appendChild(status);
+    return row;
+  }
+
+  function buildSettingInput(key, schema, value) {
+    if (schema.type === "bool") {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = Boolean(value);
+      cb.addEventListener("change", () => commitSetting(key, cb.checked));
+      const lab = el("label", {class:"toggle"}, [cb, value ? "On" : "Off"]);
+      cb.addEventListener("change", () => {
+        lab.lastChild.textContent = cb.checked ? "On" : "Off";
+      });
+      return lab;
+    }
+    if (schema.type === "select" || schema.type === "select_or_none") {
+      const sel = document.createElement("select");
+      if (schema.type === "select_or_none") {
+        const opt = document.createElement("option");
+        opt.value = "__null__";
+        opt.textContent = "(off)";
+        sel.appendChild(opt);
+      }
+      for (const choice of schema.choices) {
+        const opt = document.createElement("option");
+        opt.value = choice;
+        opt.textContent = choice;
+        sel.appendChild(opt);
+      }
+      // Select the current value; '__null__' for off
+      sel.value = (value === null || value === undefined) ? "__null__" : String(value);
+      sel.addEventListener("change", async () => {
+        const newVal = sel.value === "__null__" ? null : sel.value;
+        const isCloudProviderFlip =
+          schema.cloud_providers &&
+          schema.cloud_providers.indexOf(newVal) >= 0 &&
+          (!value || schema.cloud_providers.indexOf(value) < 0);
+        if (isCloudProviderFlip) {
+          const ok = await confirmCloudSwitch(key, newVal);
+          if (!ok) {
+            sel.value = (value === null || value === undefined) ? "__null__" : String(value);
+            return;
+          }
+        }
+        commitSetting(key, newVal);
+      });
+      return sel;
+    }
+    if (schema.type === "int") {
+      const inp = document.createElement("input");
+      inp.type = "number";
+      if (schema.min !== undefined) inp.min = String(schema.min);
+      if (schema.max !== undefined) inp.max = String(schema.max);
+      inp.value = value != null ? String(value) : "";
+      inp.addEventListener("change", () => {
+        const n = parseInt(inp.value, 10);
+        if (Number.isNaN(n)) return;
+        commitSetting(key, n);
+      });
+      return inp;
+    }
+    // text
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.value = value ? String(value) : "";
+    if (schema.placeholder) inp.placeholder = schema.placeholder;
+    // Debounce text input to avoid hammering on every keystroke.
+    inp.addEventListener("input", () => {
+      clearTimeout(inp._t);
+      inp._t = setTimeout(() => commitSetting(key, inp.value), 600);
+    });
+    inp.addEventListener("blur", () => {
+      clearTimeout(inp._t);
+      commitSetting(key, inp.value);
+    });
+    return inp;
+  }
+
+  async function commitSetting(key, value) {
+    try {
+      const r = await fetch("/api/settings/update", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({[key]: value}),
+      });
+      const data = await r.json();
+      const row = document.querySelector(`.setting-row[data-key="${key}"]`);
+      const status = row ? row.querySelector(".setting-status") : null;
+      if (!r.ok) {
+        if (status) {
+          status.textContent = data.error || "failed";
+          status.style.color = "#c44";
+          status.classList.add("shown");
+          setTimeout(() => status.classList.remove("shown"), 2200);
+        }
+        return;
+      }
+      if (status) {
+        status.textContent = "saved";
+        status.style.color = "var(--accent)";
+        status.classList.add("shown");
+        setTimeout(() => status.classList.remove("shown"), 1500);
+      }
+      if (data.restart_required) showRestartBanner();
+      // Refresh cache so subsequent cloud-flip detection uses the new value
+      if (_settingsCache) _settingsCache.values[key] = value;
+    } catch(e) {}
+  }
+
+  function showRestartBanner() {
+    const banner = document.getElementById("settings_restart_banner");
+    banner.style.display = "";
+    banner.textContent =
+      "One of the settings you just changed needs a restart to apply. " +
+      "Quit voiceclip (Ctrl+C in the terminal) and run it again to pick it up.";
+  }
+
+  function renderSystemInfo(sys) {
+    const body = document.getElementById("settings_system_body");
+    body.innerHTML = "";
+    const rows = [
+      ["Database",            sys.db_path],
+      ["DB size",             `${(sys.db_size_mb || 0).toFixed(2)} MB`],
+      ["Config",              sys.config_path],
+      ["HuggingFace cache",   `${(sys.huggingface_cache_gb || 0).toFixed(1)} GB`],
+      ["Journal enabled",     sys.history_enabled ? "yes" : "no"],
+    ];
+    for (const [k, v] of rows) {
+      body.appendChild(el("div", {class:"sys-row"}, [
+        el("div", null, k),
+        el("div", {class:"sys-val"}, String(v || "")),
+      ]));
+    }
+  }
+
+  // ---------- Cloud-switch confirm modal ----------
+
+  function confirmCloudSwitch(key, newProvider) {
+    return new Promise((resolve) => {
+      const body = CLOUD_DISCLOSURES[key] ||
+        "This setting will send data to a cloud provider.";
+      const root = document.getElementById("modal_root");
+      const backdrop = el("div", {class:"modal-backdrop"});
+      const modal = el("div", {class:"modal"}, [
+        el("h3", null, "Switch to cloud provider?"),
+        el("div", {class:"modal-body"}, [
+          el("p", null, [
+            "You're about to set ",
+            el("strong", null, key),
+            " to ",
+            el("strong", null, newProvider),
+            ".",
+          ]),
+          el("p", null, body),
+          el("p", null, [
+            "Providers typically retain API data for about 30 days for abuse detection. ",
+            "API keys must come from environment variables (",
+            el("code", null, "OPENAI_API_KEY"),
+            " / ",
+            el("code", null, "ANTHROPIC_API_KEY"),
+            ").",
+          ]),
+        ]),
+        el("div", {class:"modal-actions"}, [
+          el("button", {onclick: () => { close(false); }}, "Cancel"),
+          el("button", {class:"primary", onclick: () => { close(true); }}, "Yes, switch"),
+        ]),
+      ]);
+      backdrop.appendChild(modal);
+      root.appendChild(backdrop);
+
+      function close(ok) {
+        root.removeChild(backdrop);
+        resolve(ok);
+      }
+      // Click-outside to cancel
+      backdrop.addEventListener("click", (ev) => {
+        if (ev.target === backdrop) close(false);
+      });
+    });
   }
 
   load(state.date);
