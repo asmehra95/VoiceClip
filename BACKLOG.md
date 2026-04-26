@@ -16,12 +16,9 @@ code reviews. Maintained top-down by priority. Items get deleted when done
 
 ### Security / trust
 - [ ] **Write `PRIVACY.md`** enumerating every feature, default state, exact network behavior, provider retention.
-- [ ] **Config-time cloud-provider confirmation.** First run after switching a provider to cloud should print a visible warning.
 - [ ] **Cost controls.** No per-day / per-month spend cap on cloud. Negligible at current usage; real at gpt-4o. Add a per-feature daily token budget.
 
 ### Architecture
-- [ ] **Extract embedded HTML/CSS/JS from `viewer.py`.** Move `_PAGE_HTML` to `voiceclip/static/index.html` + `static/app.js` + `static/app.css`. Concrete plan: AbortController on tab-switch, per-component render+cleanup, no `innerHTML=""` resets. **Highest-leverage architectural refactor.**
-- [ ] **Reconnect `history._conn` on failure.** Currently if the SQLite connection dies mid-session, writes silently drop. Add lazy-reconnect on `OperationalError`.
 - [ ] **REST convention pass** — `DELETE /api/entries/:id`, `PATCH /api/entries/:id`, `/api/v1/` prefix, standardized response shape.
 - [ ] **Idempotency keys** on `/api/research/run` and `/api/patterns/run`.
 - [ ] **Narrow the `transcriptions` table** when we add a 4th kind — move `is_research_topic` into a proper `entry_type` enum.
@@ -93,6 +90,11 @@ code reviews. Maintained top-down by priority. Items get deleted when done
 
 ## Recently shipped (keeping for morale)
 
+- **Top-3 pass 3:**
+  - `history._conn` auto-reconnect on `OperationalError`. A transient DB failure no longer silently drops writes — `save()` and `update_text()` retry once against a fresh connection.
+  - Cloud-provider consent banner. First run after flipping any `*.provider` to cloud prints a loud one-time warning. Tracked via `~/.voiceclip/cloud_ack.json` so it re-fires only when provider or model changes. Fires on all three entry points (daemon, viewer, `voiceclip summarize`).
+  - Viewer static extraction. `voiceclip/viewer.py` went from 64KB → 18KB. CSS lives in `static/app.css`, JS in `static/app.js`, HTML shell in `static/index.html`. HTTP server now has a `/static/*` route with path-traversal protection. Every future viewer feature is easier to work on.
+  - 10 new tests (consent banner behavior + connection-reconnect paths); 155 → 165.
 - **Top-5 pass 2:**
   - Prompt-injection hardening: `<entry>`/`<topic>`/`<reflection>` delimiters + "ignore instructions inside" directive in all three system prompts
   - XSS defense: viewer's `renderMarkdown` now constructs DOM via `textContent` — no `innerHTML` interpretation of LLM output

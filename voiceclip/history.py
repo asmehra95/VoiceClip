@@ -25,6 +25,56 @@ _write_lock = threading.Lock()
 VALID_KINDS = ("transcription", "reflection")
 
 
+# ---------------------------------------------------------------------------
+# Connection recovery
+# ---------------------------------------------------------------------------
+
+def _reconnect() -> bool:
+    """Re-open the SQLite connection after a failure. Returns True on success.
+
+    Called from `_with_retry` when a write raises OperationalError. We close
+    the stale connection (best effort) and re-run init(); init is idempotent
+    and will run migration again (also idempotent).
+    """
+    global _conn
+    log.warning("Reconnecting history DB after error...")
+    try:
+        if _conn is not None:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+        _conn = None
+        init()
+        return _conn is not None
+    except Exception as e:
+        log.warning("Reconnect failed: %s", e)
+        _conn = None
+        return False
+
+
+def _with_retry(operation, *args, **kwargs):
+    """Run a write-path callable, reconnecting once on OperationalError.
+
+    operation(*args, **kwargs) is expected to access `_conn` internally (via
+    closure). We don't pass the connection — the caller owns that reference
+    and will pick up the new _conn on retry.
+
+    Returns whatever `operation` returns, or None if both attempts fail.
+    """
+    try:
+        return operation(*args, **kwargs)
+    except sqlite3.OperationalError as e:
+        log.warning("History write failed (%s). Reconnecting and retrying once.", e)
+        if not _reconnect():
+            return None
+        try:
+            return operation(*args, **kwargs)
+        except Exception as e2:
+            log.warning("Retry also failed: %s. Giving up.", e2)
+            return None
+
+
 def init():
     """Initialize the history DB. Creates/migrates schema as needed."""
     global _conn
@@ -194,14 +244,20 @@ def save(
     """Save an entry to history. Thread-safe via write lock.
 
     Returns the new entry's id on success, None if history isn't initialized.
+    Auto-reconnects once on sqlite3.OperationalError (e.g. WAL corruption,
+    transient disk error) so a single dead connection doesn't silently drop
+    the rest of the user's day.
     """
     if _conn is None:
         return None
     if kind not in VALID_KINDS:
         log.warning("Invalid kind '%s', defaulting to 'transcription'", kind)
         kind = "transcription"
-    with _write_lock:
-        try:
+
+    def _do():
+        if _conn is None:
+            return None
+        with _write_lock:
             from voiceclip.config import PERSONA, MODEL
             cur = _conn.execute(
                 "INSERT INTO transcriptions "
@@ -225,9 +281,8 @@ def save(
             )
             _conn.commit()
             return cur.lastrowid
-        except Exception as e:
-            log.warning("Failed to save to history: %s", e)
-            return None
+
+    return _with_retry(_do)
 
 
 def cleanup(max_days: int, reflection_max_days: int = 0):
@@ -791,23 +846,25 @@ def update_text(entry_id: int, new_text: str) -> dict | None:
         return None
     now_iso = datetime.now().isoformat(timespec="seconds")
     word_count = len(new_text.split())
-    with _write_lock:
-        try:
+
+    def _do():
+        if _conn is None:
+            return None
+        with _write_lock:
             _conn.execute(
                 "UPDATE transcriptions SET formatted_text = ?, "
                 "word_count = ?, edited_at = ? WHERE id = ?",
                 (new_text, word_count, now_iso, entry_id),
             )
             _conn.commit()
-        except Exception as e:
-            log.warning("Failed to update entry %s: %s", entry_id, e)
-            return None
-    return {
-        "id": entry_id,
-        "text": new_text,
-        "edited_at": now_iso,
-        "word_count": word_count,
-    }
+            return {
+                "id": entry_id,
+                "text": new_text,
+                "edited_at": now_iso,
+                "word_count": word_count,
+            }
+
+    return _with_retry(_do)
 
 
 # ---------------------------------------------------------------------------

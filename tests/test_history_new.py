@@ -284,3 +284,67 @@ class TestSearch:
         assert len(history.search_entries("deleted")) == 1
         history.delete_entry(i)
         assert len(history.search_entries("deleted")) == 0
+
+
+
+class TestReconnect:
+    """Auto-reconnect behavior on OperationalError.
+
+    Verifies the fallback path in `_with_retry` — if the write fails once,
+    the helper re-opens the connection and retries. Data should land.
+    """
+
+    def test_save_survives_transient_error(self, monkeypatch):
+        import sqlite3
+
+        real_conn = history._conn
+        call_count = {"n": 0}
+
+        class FlakyConn:
+            """Wraps the real connection; raises on the first INSERT."""
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, params=()):
+                call_count["n"] += 1
+                if call_count["n"] == 1 and "INSERT" in sql.upper():
+                    raise sqlite3.OperationalError("database is locked (simulated)")
+                return self._inner.execute(sql, params)
+
+            def commit(self):
+                return self._inner.commit()
+
+            def close(self):
+                return self._inner.close()
+
+        # Swap in the flaky wrapper. When _reconnect runs, it calls init()
+        # which will replace history._conn with a fresh real connection,
+        # so the retried write succeeds.
+        history._conn = FlakyConn(real_conn)
+        new_id = history.save("raw", "Survived.", 1.0)
+        assert new_id is not None
+        # Prove it actually wrote to the real DB
+        row = history._conn.execute(
+            "SELECT formatted_text FROM transcriptions WHERE id = ?", (new_id,)
+        ).fetchone()
+        assert row[0] == "Survived."
+
+    def test_save_gives_up_cleanly_if_both_attempts_fail(self, monkeypatch):
+        import sqlite3
+
+        class AlwaysBroken:
+            def execute(self, sql, params=()):
+                raise sqlite3.OperationalError("permanently broken")
+
+            def commit(self):
+                pass
+
+            def close(self):
+                pass
+
+        history._conn = AlwaysBroken()
+        # Prevent _reconnect from healing the connection so we hit the
+        # "both attempts failed" branch.
+        monkeypatch.setattr(history, "_reconnect", lambda: False)
+        result = history.save("raw", "Doomed.", 1.0)
+        assert result is None

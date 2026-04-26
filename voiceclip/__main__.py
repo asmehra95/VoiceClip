@@ -201,8 +201,10 @@ def _handle_summarize(args):
 
     from voiceclip.history import init
     from voiceclip.summarizer import summarize_day, cloud_provider_warning
+    from voiceclip.consent import check_and_warn as _cloud_check
 
     init()
+    _cloud_check()
 
     warn = cloud_provider_warning()
     if warn:
@@ -254,6 +256,10 @@ def _run_voiceclip():
     from voiceclip import config
     config.load()
     config.validate()
+
+    # Surface any cloud-provider config change before we start using it
+    from voiceclip.consent import check_and_warn as _cloud_check
+    _cloud_check()
 
     log = logging.getLogger("voiceclip")
 

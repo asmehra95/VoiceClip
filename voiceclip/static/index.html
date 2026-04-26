@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VoiceClip journal</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🎙️ VoiceClip journal</h1>
+    <div class="daynav" id="journal_nav">
+      <button id="prev">← Prev</button>
+      <button id="today">Today</button>
+      <button id="next">Next →</button>
+      <input id="datepicker" type="date">
+    </div>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-view="journal">📓 Journal</button>
+    <button class="tab" data-view="queue">📚 Queue</button>
+    <button class="tab" data-view="patterns">📊 Patterns</button>
+  </div>
+
+  <div id="journal_view">
+    <div class="dayline">
+      <h2 id="daylabel">…</h2>
+      <div class="stats" id="stats"></div>
+    </div>
+
+    <div class="search-row">
+      <input id="search_input" type="search"
+             placeholder="Search across all days (⌘K)"
+             autocomplete="off">
+      <button id="search_clear" style="display:none">Clear</button>
+    </div>
+
+    <div id="summary_slot"></div>
+    <div id="apps_slot"></div>
+    <section class="entries" id="entries_slot"></section>
+  </div>
+
+  <div id="queue_view" style="display:none">
+    <div class="dayline">
+      <h2>Research queue</h2>
+      <div class="stats" id="queue_stats"></div>
+    </div>
+    <div class="queue-input">
+      <input id="topic_input" type="text"
+             placeholder="What do you want researched? (e.g. 'CRDTs vs. operational transforms')">
+      <button id="topic_add">Add</button>
+    </div>
+    <div class="queue-hint" id="queue_hint"></div>
+    <section id="topics_slot"></section>
+  </div>
+
+  <div id="patterns_view" style="display:none">
+    <div class="dayline">
+      <h2>Patterns</h2>
+      <div class="stats" id="patterns_stats"></div>
+    </div>
+    <div class="queue-hint" id="patterns_hint"></div>
+    <section id="patterns_slot"></section>
+  </div>
+</div>
+
+<script src="/static/app.js" defer></script>
+</body>
+</html>
