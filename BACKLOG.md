@@ -90,6 +90,8 @@ code reviews. Maintained top-down by priority. Items get deleted when done
 
 ## Recently shipped (keeping for morale)
 
+- **Usability pass 1:**
+  - First-run onboarding flow (`voiceclip onboard`). 5-step keyboard-driven walkthrough, keyboard-only, no deps. Teaches dictation, checks permissions, offers reflections/toggle-mode/history/summaries as opt-ins, writes accepted choices directly into `~/.voiceclip/config.json`. Runs automatically on first launch, skippable with Enter, gated by TTY. 14 new tests.
 - **Top-3 pass 3:**
   - `history._conn` auto-reconnect on `OperationalError`. A transient DB failure no longer silently drops writes — `save()` and `update_text()` retry once against a fresh connection.
   - Cloud-provider consent banner. First run after flipping any `*.provider` to cloud prints a loud one-time warning. Tracked via `~/.voiceclip/cloud_ack.json` so it re-fires only when provider or model changes. Fires on all three entry points (daemon, viewer, `voiceclip summarize`).

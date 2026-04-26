@@ -85,6 +85,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # doctor subcommand — system health check
     sub.add_parser("doctor", help="Run a health check on your VoiceClip setup")
 
+    # onboard subcommand — re-run the first-run walkthrough
+    sub.add_parser("onboard", help="Run (or re-run) the first-launch walkthrough")
+
     return parser
 
 
@@ -257,6 +260,14 @@ def _run_voiceclip():
     config.load()
     config.validate()
 
+    # First-run walkthrough, if the user hasn't been through it yet.
+    # Safe no-op on non-TTY / repeat runs; reloads config after in case the
+    # user opted into new features during the flow.
+    from voiceclip.onboard import run as run_onboard, needs_onboarding
+    if needs_onboarding():
+        run_onboard()
+        config.load()  # pick up any opt-ins the user just committed
+
     # Surface any cloud-provider config change before we start using it
     from voiceclip.consent import check_and_warn as _cloud_check
     _cloud_check()
@@ -422,6 +433,9 @@ def main():
     elif args.command == "doctor":
         from voiceclip.doctor import run as run_doctor
         sys.exit(run_doctor())
+    elif args.command == "onboard":
+        from voiceclip.onboard import run as run_onboard
+        run_onboard(force=True)
     else:
         _run_voiceclip()
 
