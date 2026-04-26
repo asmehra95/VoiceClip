@@ -80,6 +80,12 @@ code reviews. Maintained top-down by priority. Items get deleted when done
 - [ ] **Weekly digest summary.**
 - [ ] **Mac App Store packaging.** The single biggest "hobby → product" gap.
 - [ ] **i18n.** Realistic 3-engineer-week project; wait for a user who asks.
+- [ ] **Local research provider** (deliberately parked). Evaluated three approaches:
+  - *LLM-only local*: no web search, no sources — feels broken for a button labeled "Research."
+  - *Ollama + SearXNG/DuckDuckGo*: real local research but ~1-2 days of work, 30-60s per query, noticeably lower quality than cloud at this model scale, requires Ollama as a new dependency.
+  - *mlx-lm + custom search loop*: ~3× the code for the same result as Ollama, worse tool-use quality.
+  
+  Conclusion: stay cloud-only for research until (a) there's a confirmed need for offline, or (b) local tool-use in small models improves meaningfully. Revisit in 6-12 months.
 
 ### Ethics / product guardrails
 - [ ] **Never ship reflection frequency metrics** — no streaks, no "you reflected 2x less this week."

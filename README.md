@@ -392,7 +392,7 @@ These features are all `provider = "none"` by default. If you change any of them
 | Feature | What is sent |
 |---|---|
 | **Summaries** (`summaries.provider`) | Every entry (transcription + reflection) for the target day |
-| **Research** (`research.provider`) | The research topic you typed or dictated (text only). If the model uses its web-search tool, that topic is also sent to a search index (Bing for OpenAI, Anthropic's integration for Anthropic). |
+| **Research** (`research.provider`) | The research topic you typed or dictated (text only). If the model uses its web-search tool, that topic is also sent to a search index (Bing for OpenAI, Anthropic's integration for Anthropic). Research is **cloud-only** — the feature depends on live web search, which local models can't do reliably. |
 | **Patterns** (`patterns.provider`) | Up to 7 days of reflections and cached daily summaries in a single prompt |
 
 API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are read from environment variables only. They are never stored in `config.json`, logs, or the database.
