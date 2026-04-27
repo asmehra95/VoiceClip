@@ -243,3 +243,57 @@ class TestArchiveEndpoints:
         data = _get(server + "/api/queue")
         assert "archived" in data
         assert data["archived"] == []
+
+
+class TestCustomVocabularySetting:
+    """Settings endpoint accepts and validates the custom_vocabulary list."""
+
+    def test_get_exposes_schema_and_value(self, server):
+        data = _get(server + "/api/settings")
+        assert "custom_vocabulary" in data["schema"]
+        assert data["schema"]["custom_vocabulary"]["type"] == "text_list"
+        assert data["values"]["custom_vocabulary"] == []
+
+    def test_accepts_list(self, server):
+        code, r = _post(f"{server}/api/settings/update",
+                        {"custom_vocabulary": ["Kiro", "MeshClaw"]})
+        assert code == 200
+        # New value should round-trip through GET
+        after = _get(server + "/api/settings")
+        assert after["values"]["custom_vocabulary"] == ["Kiro", "MeshClaw"]
+
+    def test_accepts_newline_string_from_textarea(self, server):
+        """The UI sends a newline-joined string; server normalizes to list."""
+        code, r = _post(f"{server}/api/settings/update",
+                        {"custom_vocabulary": "Kiro\nMeshClaw\n\n  AutoSDE  "})
+        assert code == 200
+        after = _get(server + "/api/settings")
+        assert after["values"]["custom_vocabulary"] == ["Kiro", "MeshClaw", "AutoSDE"]
+
+    def test_dedupes_case_insensitively(self, server):
+        code, r = _post(f"{server}/api/settings/update",
+                        {"custom_vocabulary": ["Kiro", "kiro", "KIRO"]})
+        assert code == 200
+        after = _get(server + "/api/settings")
+        assert after["values"]["custom_vocabulary"] == ["Kiro"]
+
+    def test_rejects_non_string_entries(self, server):
+        code, r = _post(f"{server}/api/settings/update",
+                        {"custom_vocabulary": ["ok", 42]})
+        assert code == 400
+
+    def test_rejects_overly_long_entry(self, server):
+        code, r = _post(f"{server}/api/settings/update",
+                        {"custom_vocabulary": ["x" * 200]})
+        assert code == 400
+
+    def test_rejects_too_many_entries(self, server):
+        huge = [f"word{i}" for i in range(250)]
+        code, r = _post(f"{server}/api/settings/update",
+                        {"custom_vocabulary": huge})
+        assert code == 400
+
+    def test_rejects_wrong_type(self, server):
+        code, r = _post(f"{server}/api/settings/update",
+                        {"custom_vocabulary": 42})
+        assert code == 400

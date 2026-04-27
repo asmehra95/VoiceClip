@@ -99,7 +99,12 @@ _DEFAULT_CONFIG = {
         "voiceclip": "VoiceClip",
         "macos": "macOS",
         "iphone": "iPhone"
-    }
+    },
+    # Flat list of words/phrases that bias Whisper toward them. Easier
+    # to edit from the UI than the persona/dictionary block — just one
+    # string per entry, no key/value mapping required. Appended verbatim
+    # to the Whisper initial_prompt.
+    "custom_vocabulary": []
 }
 
 
@@ -148,6 +153,11 @@ PATTERNS_WINDOW_DAYS = 7
 # Populated by load() — the merged dictionary (global + persona)
 DICTIONARY: dict[str, str] = {}
 
+# User-maintained list of extra vocabulary (names, jargon, acronyms) that
+# bias Whisper without needing a full persona-dictionary entry. Edited
+# from the Settings tab as a textarea (one entry per line).
+CUSTOM_VOCABULARY: list[str] = []
+
 # Populated by load() — the persona prompt + dictionary values for Whisper
 INITIAL_PROMPT: str | None = None
 
@@ -179,6 +189,7 @@ def load():
     Call this once at startup. Sets all module-level config variables.
     """
     global MODEL, ENGLISH_ONLY, PERSONA, DICTIONARY, INITIAL_PROMPT
+    global CUSTOM_VOCABULARY
     global HOTKEY, HOTKEY_MODE, HISTORY_ENABLED, HISTORY_MAX_DAYS, _raw
     global REFLECTION_HOTKEY, REFLECTION_HOTKEY_MODE, REFLECTION_MAX_DAYS
     global SUMMARIES_PROVIDER, SUMMARIES_LOCAL_MODEL
@@ -344,7 +355,31 @@ def load():
     persona_dict = active_persona.get("dictionary", {})
     DICTIONARY = {**global_dict, **persona_dict}
 
-    # Build initial_prompt: persona prompt + all dictionary values
+    # Custom vocabulary — flat list of words/phrases, UI-editable.
+    # Sanitize: keep strings only, trim whitespace, drop empties,
+    # dedupe case-insensitively while preserving first-seen casing.
+    raw_vocab = cfg.get("custom_vocabulary", [])
+    if not isinstance(raw_vocab, list):
+        log.warning("custom_vocabulary must be a list, got %s; ignoring",
+                    type(raw_vocab).__name__)
+        raw_vocab = []
+    CUSTOM_VOCABULARY = []
+    _seen_vocab: set[str] = set()
+    for item in raw_vocab:
+        if not isinstance(item, str):
+            continue
+        s = item.strip()
+        if not s:
+            continue
+        key = s.lower()
+        if key in _seen_vocab:
+            continue
+        _seen_vocab.add(key)
+        CUSTOM_VOCABULARY.append(s)
+
+    # Build initial_prompt: persona prompt + all dictionary values +
+    # custom vocabulary (kept separate so users can add biasing words
+    # without wading into the persona/dictionary map).
     prompt_parts = []
     persona_prompt = active_persona.get("prompt", "")
     if persona_prompt:
@@ -361,6 +396,14 @@ def load():
                 seen.add(w.lower())
                 unique.append(w)
         prompt_parts.append(", ".join(unique))
+
+    # Append custom-vocab words last; same running dedupe so a word that
+    # already appears in the persona dictionary isn't doubled up.
+    if CUSTOM_VOCABULARY:
+        fresh = [w for w in CUSTOM_VOCABULARY if w.lower() not in seen] \
+                if dict_words else list(CUSTOM_VOCABULARY)
+        if fresh:
+            prompt_parts.append(", ".join(fresh))
 
     INITIAL_PROMPT = ". ".join(prompt_parts)[:500] if prompt_parts else None
 

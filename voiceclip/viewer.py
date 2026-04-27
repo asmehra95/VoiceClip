@@ -245,6 +245,16 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
         "min": 1,
         "max": 90,
     },
+
+    # Dictation vocabulary — flat list of words/phrases to bias Whisper.
+    # Rendered as a textarea where each non-empty line is one entry.
+    # Lives in its own group so users find it while tuning dictation.
+    "custom_vocabulary": {
+        "group": "Dictation",
+        "type": "text_list",
+        "restart_required": True,
+        "placeholder": "One per line (names, jargon, acronyms)",
+    },
 }
 
 
@@ -282,6 +292,7 @@ def _runtime_value(key: str):
         "patterns.openai_model": config.PATTERNS_OPENAI_MODEL,
         "patterns.anthropic_model": config.PATTERNS_ANTHROPIC_MODEL,
         "patterns.window_days": config.PATTERNS_WINDOW_DAYS,
+        "custom_vocabulary": list(config.CUSTOM_VOCABULARY),
     }
     return mapping.get(key)
 
@@ -378,6 +389,35 @@ def _apply_settings_patch(patch: dict) -> dict:
         elif typ == "text":
             if new_value is not None and not isinstance(new_value, str):
                 return {"error": f"'{key}' must be a string"}
+        elif typ == "text_list":
+            # Accept either a list of strings (preferred) or a newline-
+            # separated string (what the textarea will send). Normalize
+            # to a cleaned list: trim, drop empties, dedupe preserving
+            # first-seen casing.
+            if isinstance(new_value, str):
+                raw_items = new_value.splitlines()
+            elif isinstance(new_value, list):
+                raw_items = new_value
+            else:
+                return {"error": f"'{key}' must be a list or newline-separated string"}
+            cleaned: list[str] = []
+            seen: set[str] = set()
+            for item in raw_items:
+                if not isinstance(item, str):
+                    return {"error": f"'{key}' entries must be strings"}
+                s = item.strip()
+                if not s:
+                    continue
+                if len(s) > 80:
+                    return {"error": f"'{key}' entries must be 80 characters or shorter"}
+                low = s.lower()
+                if low in seen:
+                    continue
+                seen.add(low)
+                cleaned.append(s)
+            if len(cleaned) > 200:
+                return {"error": f"'{key}' is limited to 200 entries"}
+            new_value = cleaned
         else:
             return {"error": f"unhandled type for '{key}'"}
 

@@ -981,3 +981,33 @@ details.archived-topics[open] > summary { margin-bottom: 12px; }
 .topic.archived:hover {
   opacity: 1;
 }
+
+
+/* Custom vocabulary — textarea setting spans the row so entries aren't
+   cramped into a 1fr column between the label and the saved-pill. */
+.setting-row.textarea-row {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.setting-row.textarea-row .setting-status {
+  justify-self: end;
+}
+.setting-input textarea.setting-textarea {
+  width: 100%;
+  min-height: 110px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  resize: vertical;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.setting-input textarea.setting-textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}

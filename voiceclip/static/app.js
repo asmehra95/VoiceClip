@@ -1211,6 +1211,7 @@
     "patterns.openai_model":   ["OpenAI model", null],
     "patterns.anthropic_model":["Anthropic model", null],
     "patterns.window_days":    ["Window (days)", "How many days of history to read"],
+    "custom_vocabulary":       ["Custom vocabulary", "Words and phrases that bias dictation. One per line. Names, jargon, acronyms — anything Whisper keeps getting wrong."],
   };
 
   // Cloud-provider confirm copy, keyed by the dotted setting key.
@@ -1270,6 +1271,8 @@
     const [label, desc] = SETTING_COPY[key] || [key, null];
     const row = el("div", {class:"setting-row"});
     row.dataset.key = key;
+    // Multi-line inputs get a stacked layout so the textarea can breathe.
+    if (schema.type === "text_list") row.classList.add("textarea-row");
 
     const labelEl = el("div", {class:"setting-label"}, [
       el("span", null, [
@@ -1348,6 +1351,22 @@
         commitSetting(key, n);
       });
       return inp;
+    }
+    if (schema.type === "text_list") {
+      // Multi-line textarea — each non-empty line is one entry. Save on
+      // blur (avoid hammering the server per keystroke). Server will
+      // trim, dedupe, and validate length per entry.
+      const ta = document.createElement("textarea");
+      ta.rows = 6;
+      ta.className = "setting-textarea";
+      if (schema.placeholder) ta.placeholder = schema.placeholder;
+      const items = Array.isArray(value) ? value : [];
+      ta.value = items.join("\n");
+      ta.addEventListener("blur", () => {
+        const lines = ta.value.split("\n").map(s => s.trim()).filter(Boolean);
+        commitSetting(key, lines);
+      });
+      return ta;
     }
     // text
     const inp = document.createElement("input");

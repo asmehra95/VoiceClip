@@ -218,3 +218,71 @@ class TestGetModelRepo:
         repo, key = config.get_model_repo()
         # large models don't have .en variants
         assert key == "large-v3-turbo"
+
+
+
+class TestCustomVocabulary:
+    """UI-editable flat list of biasing words appended to initial_prompt."""
+
+    def test_defaults_to_empty_list(self):
+        config.load()
+        assert config.CUSTOM_VOCABULARY == []
+
+    def test_loads_from_config_file(self, tmp_path):
+        cfg_path = os.path.join(str(tmp_path), "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"custom_vocabulary": ["Kiro", "MeshClaw", "AutoSDE"]}, f)
+        config.load()
+        assert config.CUSTOM_VOCABULARY == ["Kiro", "MeshClaw", "AutoSDE"]
+
+    def test_strips_whitespace_and_drops_empties(self, tmp_path):
+        cfg_path = os.path.join(str(tmp_path), "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"custom_vocabulary": ["  Kiro  ", "", "  ", "AutoSDE"]}, f)
+        config.load()
+        assert config.CUSTOM_VOCABULARY == ["Kiro", "AutoSDE"]
+
+    def test_dedupes_case_insensitively_keeping_first_casing(self, tmp_path):
+        cfg_path = os.path.join(str(tmp_path), "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"custom_vocabulary": ["Kiro", "kiro", "KIRO"]}, f)
+        config.load()
+        assert config.CUSTOM_VOCABULARY == ["Kiro"]
+
+    def test_non_string_entries_are_filtered(self, tmp_path):
+        cfg_path = os.path.join(str(tmp_path), "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"custom_vocabulary": ["Kiro", 42, None, "AutoSDE"]}, f)
+        config.load()
+        assert config.CUSTOM_VOCABULARY == ["Kiro", "AutoSDE"]
+
+    def test_non_list_is_ignored_with_warning(self, tmp_path):
+        cfg_path = os.path.join(str(tmp_path), "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"custom_vocabulary": "not a list"}, f)
+        config.load()
+        assert config.CUSTOM_VOCABULARY == []
+
+    def test_vocabulary_appears_in_initial_prompt(self, tmp_path):
+        cfg_path = os.path.join(str(tmp_path), "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"custom_vocabulary": ["MeshClaw", "Taskei"]}, f)
+        config.load()
+        assert config.INITIAL_PROMPT is not None
+        assert "MeshClaw" in config.INITIAL_PROMPT
+        assert "Taskei" in config.INITIAL_PROMPT
+
+    def test_vocabulary_not_duplicated_when_already_in_dictionary(self, tmp_path):
+        """If a custom-vocab word already appears in the persona dictionary,
+        it shouldn't double up in the prompt."""
+        cfg_path = os.path.join(str(tmp_path), "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({
+                "dictionary": {"voiceclip": "VoiceClip"},
+                "custom_vocabulary": ["voiceclip", "UniqueWord"],
+            }, f)
+        config.load()
+        # "voiceclip" (case-insensitive) appears exactly once in the prompt;
+        # the unique custom-vocab word gets through.
+        assert config.INITIAL_PROMPT.lower().count("voiceclip") == 1
+        assert "UniqueWord" in config.INITIAL_PROMPT
