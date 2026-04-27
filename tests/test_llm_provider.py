@@ -99,3 +99,73 @@ class TestMlxCache:
         llm_provider._mlx_cache["cached-model"] = ("weights", "tokenizer")
         # Should return the cached tuple verbatim, no import path taken
         assert llm_provider._mlx_load("cached-model") == ("weights", "tokenizer")
+
+
+class TestStripReasoning:
+    """Reasoning-model models (Qwen3, DeepSeek-R1) emit a scratchpad before
+    the real answer. The viewer should never show that to the user."""
+
+    def test_passthrough_when_no_reasoning(self):
+        assert llm_provider._strip_reasoning("Plain answer.") == "Plain answer."
+
+    def test_empty_string_is_safe(self):
+        assert llm_provider._strip_reasoning("") == ""
+        assert llm_provider._strip_reasoning(None) is None
+
+    def test_strips_think_block(self):
+        raw = "<think>Let me analyze this step by step.</think>\n\nThe answer is 42."
+        out = llm_provider._strip_reasoning(raw)
+        assert "analyze" not in out.lower()
+        assert "42" in out
+
+    def test_strips_thinking_variant(self):
+        raw = "<thinking>Reasoning here.</thinking>Final: done."
+        out = llm_provider._strip_reasoning(raw)
+        assert "Reasoning" not in out
+        assert "Final: done." in out
+
+    def test_strips_reasoning_variant(self):
+        raw = "<reasoning>Step 1...</reasoning>Real output."
+        out = llm_provider._strip_reasoning(raw)
+        assert "Step 1" not in out
+        assert "Real output." in out
+
+    def test_strips_multiline_reasoning(self):
+        raw = (
+            "<think>\n"
+            "1. Analyze the data\n"
+            "2. Form a conclusion\n"
+            "</think>\n"
+            "Short summary for the user."
+        )
+        out = llm_provider._strip_reasoning(raw)
+        assert "Analyze" not in out
+        assert "Short summary for the user." in out.strip()
+
+    def test_strips_multiple_blocks(self):
+        raw = "<think>first</think>middle<think>second</think>end"
+        out = llm_provider._strip_reasoning(raw)
+        assert "first" not in out
+        assert "second" not in out
+        assert "middle" in out
+        assert "end" in out
+
+    def test_case_insensitive_tag(self):
+        raw = "<THINK>thoughts</THINK>answer"
+        out = llm_provider._strip_reasoning(raw)
+        assert "thoughts" not in out
+        assert "answer" in out
+
+    def test_unclosed_think_at_start_is_dropped(self):
+        """When a model hits max_tokens mid-reasoning, there's no usable
+        answer — better to return empty than ship the scratchpad."""
+        raw = "<think>Let me think about this for a really long time..."
+        out = llm_provider._strip_reasoning(raw).strip()
+        assert out == ""
+
+    def test_preserves_content_before_unclosed_opener(self):
+        """If prose precedes an unclosed <think>, the prose stays."""
+        raw = "Quick answer.\n\n<think>and then I started second-guessing..."
+        out = llm_provider._strip_reasoning(raw)
+        assert "Quick answer." in out
+        assert "second-guessing" not in out

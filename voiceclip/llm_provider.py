@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from typing import Any, Callable
 
@@ -72,13 +73,28 @@ def complete_local(
     model_id: str,
     max_tokens: int = 400,
 ) -> str:
-    """Run a single system+user completion via mlx-lm. Returns text only."""
+    """Run a single system+user completion via mlx-lm. Returns text only.
+
+    Reasoning models (Qwen3, DeepSeek-R1, etc.) emit a scratchpad before
+    the real answer. We handle this two ways:
+
+    - Append `/no_think` to the user prompt. Qwen3 recognizes this and
+      suppresses the reasoning block entirely. Models that don't recognize
+      it just see extra characters and ignore them. No harm.
+    - After generation, strip any `<think>...</think>` blocks that slipped
+      through anyway — DeepSeek-R1 and some Qwen variants emit these even
+      with the hint.
+
+    The goal is a plain summary/brief/etc. with no chain-of-thought
+    leaking into the UI.
+    """
     from mlx_lm import generate
 
     model, tokenizer = _mlx_load(model_id)
     messages = [
         {"role": "system", "content": system},
-        {"role": "user", "content": user},
+        # /no_think is a Qwen3 convention; other models ignore the suffix.
+        {"role": "user", "content": user + "\n/no_think"},
     ]
     try:
         prompt = tokenizer.apply_chat_template(
@@ -89,7 +105,41 @@ def complete_local(
     out = generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens, verbose=False)
     if out.startswith(prompt):
         out = out[len(prompt):]
-    return out.strip()
+    return _strip_reasoning(out).strip()
+
+
+# Matches <think>...</think>, <thinking>...</thinking>, <reasoning>...</reasoning>
+# across newlines. Non-greedy so back-to-back blocks are handled individually.
+_REASONING_BLOCK_RE = re.compile(
+    r"<(think|thinking|reasoning)\b[^>]*>.*?</\1\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Remove reasoning-model scratchpad blocks from a completion.
+
+    Handles the common cases:
+      - <think>...</think> (Qwen3, DeepSeek-R1, QwQ)
+      - <thinking>...</thinking> (some fine-tunes)
+      - <reasoning>...</reasoning> (Claude-style when the model mimics it)
+      - An unclosed <think>... that runs to the end (model hit max_tokens
+        mid-reasoning; strip everything after the opener rather than ship
+        a scratchpad with no answer).
+
+    Conservative: if nothing matches, the original text comes back unchanged.
+    """
+    if not text:
+        return text
+    cleaned = _REASONING_BLOCK_RE.sub("", text)
+    # Handle unclosed opener: if "<think>" appears with no matching close
+    # after substitution, the model ran out of tokens mid-reasoning and
+    # there's nothing useful after it anyway.
+    low = cleaned.lower()
+    open_idx = low.find("<think>")
+    if open_idx >= 0 and "</think>" not in low[open_idx:]:
+        cleaned = cleaned[:open_idx]
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
