@@ -24,9 +24,7 @@ code reviews. Maintained top-down by priority. Items get deleted when done
 - [ ] **Narrow the `transcriptions` table** when we add a 4th kind — move `is_research_topic` into a proper `entry_type` enum.
 
 ### Performance
-- [ ] **Cap recorder `frames` buffer.** A 10-minute recording is ~115MB. Hard-cap at 120s with a "too long" stop.
 - [ ] **`find_research_topic_by_text`** — switch to SQLite FTS5 when we pass ~500 topics.
-- [ ] **Pause auto-refresh when tab is hidden** (`document.visibilityState`).
 - [ ] **Persist patterns cache across restarts** in a SQLite `patterns_cache` table.
 
 ### Testing

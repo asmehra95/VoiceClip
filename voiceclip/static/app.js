@@ -963,8 +963,13 @@
     } catch(e) {}
   }
 
-  // Auto-refresh today's page every 20s while viewing today's journal
+  // Auto-refresh today's page every 20s while viewing today's journal.
+  // Skip the poll entirely when the tab is hidden — saves a /api/day
+  // round-trip (and a re-render that would wipe any in-flight inline edit)
+  // on every laptop lid-close or tab-switch. The interval itself keeps
+  // running; only the fetch is gated.
   setInterval(() => {
+    if (document.visibilityState !== "visible") return;
     if (state.view === "journal" && state.date === todayStr()) load(state.date);
   }, 20000);
 

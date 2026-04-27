@@ -36,6 +36,13 @@ SAMPLE_RATE = 16000       # Whisper expects 16kHz
 MIN_FILE_BYTES = 1000     # WAV files smaller than this are treated as empty
 SILENCE_RMS_THRESHOLD = 0.003
 MIN_AUDIO_DURATION = 0.3  # Seconds
+# Hard cap on a single recording. Protects against stuck-key / forgotten-toggle
+# scenarios that would otherwise grow the frame buffer linearly (~4 MB per
+# minute at 16 kHz float32). Past the cap the callback drops new frames
+# silently; the user still needs to release the key to finish the cycle, but
+# memory stops growing and transcription only gets the first MAX_RECORDING_SECONDS
+# of audio.
+MAX_RECORDING_SECONDS = 120
 TEMP_PREFIX = "voiceclip_"
 MIN_HOLD_SECONDS = 0.3    # Taps shorter than this are ignored
 PASTE_DELAY = 0.05        # Seconds between copy and simulated paste

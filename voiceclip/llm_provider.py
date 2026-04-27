@@ -109,7 +109,10 @@ def _openai_client():
             "The 'openai' package is not installed. Install it with:\n"
             "    ~/.voiceclip/.venv/bin/pip install openai"
         )
-    return OpenAI(api_key=api_key)
+    # 60s transport timeout so a stalled network can't wedge the viewer
+    # handler thread for the SDK default (10 min). Readable TimeoutError
+    # bubbles up to our error-humanizing path.
+    return OpenAI(api_key=api_key, timeout=60.0)
 
 
 def complete_openai(
@@ -215,7 +218,8 @@ def _anthropic_client():
             "The 'anthropic' package is not installed. Install it with:\n"
             "    ~/.voiceclip/.venv/bin/pip install anthropic"
         )
-    return anthropic.Anthropic(api_key=api_key)
+    # 60s transport timeout — same rationale as _openai_client.
+    return anthropic.Anthropic(api_key=api_key, timeout=60.0)
 
 
 def complete_anthropic(

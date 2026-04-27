@@ -286,3 +286,20 @@ class TestCustomVocabulary:
         # the unique custom-vocab word gets through.
         assert config.INITIAL_PROMPT.lower().count("voiceclip") == 1
         assert "UniqueWord" in config.INITIAL_PROMPT
+
+
+
+class TestPerformanceConstants:
+    """Sanity checks on the performance-related constants. Keeps us honest
+    if someone tries to ratchet them back up without thinking it through."""
+
+    def test_max_recording_seconds_is_reasonable(self):
+        from voiceclip import config as cfg
+        # Anything above a few minutes defeats the purpose (memory cap).
+        # Anything below 30s is hostile to legit dictation.
+        assert 30 <= cfg.MAX_RECORDING_SECONDS <= 300
+
+    def test_transcribe_timeout_is_interactive(self):
+        from voiceclip import transcriber
+        # 120s was the old diagnostic value; interactive needs <= 60.
+        assert transcriber.TRANSCRIBE_TIMEOUT <= 60

@@ -24,10 +24,12 @@ log = logging.getLogger(__name__)
 _REPO, _MODEL_KEY = get_model_repo()
 
 # Timeout for transcription calls (seconds). If mlx_whisper hangs beyond
-# this, the watchdog thread will log an error. The call itself can't be
-# forcefully killed (C extension), but _busy will be cleared so the user
-# can keep recording.
-TRANSCRIBE_TIMEOUT = 120
+# this, the watchdog thread logs an error and returns None so the hotkey
+# coordinator frees up. The C-extension worker can't be killed, but 30s is
+# a reasonable ceiling for interactive dictation — typical end-to-end on
+# Apple Silicon for a 10s clip is 1-3s, and the 99th percentile is well
+# under 15s. Long clips are already capped by MAX_RECORDING_SECONDS.
+TRANSCRIBE_TIMEOUT = 30
 
 
 def _is_model_cached() -> bool:

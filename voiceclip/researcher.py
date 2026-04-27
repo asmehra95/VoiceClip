@@ -147,6 +147,12 @@ def _humanize_provider_error(err: Exception, provider: str, model_id: str) -> st
         )
     if "rate" in low and "limit" in low:
         return f"{provider} rate-limited the request. Try again in a minute. Original: {raw[:200]}"
+    if "timeout" in low or "timed out" in low:
+        return (
+            f"{provider} did not respond within 60 seconds. This usually means "
+            f"a slow network or the provider is overloaded. Try again. "
+            f"Original: {raw[:200]}"
+        )
     return f"{provider} error: {raw[:300]}"
 
 

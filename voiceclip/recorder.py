@@ -23,6 +23,7 @@ import multiprocessing
 from voiceclip.config import (
     RecorderCmd, SAMPLE_RATE, SILENCE_RMS_THRESHOLD,
     MIN_AUDIO_DURATION, MIN_FILE_BYTES, TEMP_PREFIX,
+    MAX_RECORDING_SECONDS,
 )
 from voiceclip.utils import safe_unlink
 
@@ -73,9 +74,25 @@ def _recorder_loop(conn):
     # Pre-compute resampling indices once (ratio is constant for this device)
     need_resample = native_sr != SAMPLE_RATE
     resample_ratio = SAMPLE_RATE / native_sr if need_resample else 1.0
+    # Frame cap derived from the duration cap at the native sample rate.
+    # Computed once — comparison in the callback is a single integer compare.
+    max_samples = int(MAX_RECORDING_SECONDS * native_sr)
+    # Log a warning exactly once per recording when the cap trips.
+    _cap_hit = [False]
 
     def callback(indata, frame_count, time_info, status):
         if rec_event.is_set():
+            with _rms_lock:
+                already = _rms_count[0]
+            if already >= max_samples:
+                if not _cap_hit[0]:
+                    _cap_hit[0] = True
+                    print(
+                        f"[recorder] ⚠️  Recording hit {MAX_RECORDING_SECONDS}s cap; "
+                        "dropping new audio. Release the hotkey to transcribe.",
+                        flush=True,
+                    )
+                return
             with frames_lock:
                 frames.append(indata.copy())
             # Track running RMS — dot product is allocation-free and ~2x faster
@@ -121,6 +138,7 @@ def _recorder_loop(conn):
             with _rms_lock:
                 _rms_sum[0] = 0.0
                 _rms_count[0] = 0
+            _cap_hit[0] = False
             rec_event.set()
             conn.send("ok")
 
