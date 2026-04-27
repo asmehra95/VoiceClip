@@ -303,3 +303,39 @@ class TestPerformanceConstants:
         from voiceclip import transcriber
         # 120s was the old diagnostic value; interactive needs <= 60.
         assert transcriber.TRANSCRIBE_TIMEOUT <= 60
+
+
+
+class TestResearchProvider:
+    """Research now supports local (mlx-lm) alongside the cloud providers."""
+
+    def test_local_is_valid_research_provider(self, tmp_path):
+        cfg_path = os.path.join(str(tmp_path), "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({
+                "research": {
+                    "provider": "local",
+                    "local_model": "mlx-community/TestModel-4bit",
+                }
+            }, f)
+        config.load()
+        assert config.RESEARCH_PROVIDER == "local"
+        assert config.RESEARCH_LOCAL_MODEL == "mlx-community/TestModel-4bit"
+
+    def test_local_model_has_sensible_default(self):
+        config.load()
+        # Default matches the shared local default used by summaries/patterns
+        assert config.RESEARCH_LOCAL_MODEL == "mlx-community/Qwen2.5-7B-Instruct-4bit"
+
+    def test_invalid_research_provider_falls_back(self, tmp_path):
+        cfg_path = os.path.join(str(tmp_path), "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"research": {"provider": "bogus"}}, f)
+        config.load()
+        assert config.RESEARCH_PROVIDER == "none"
+
+    def test_env_override_for_local_model(self, monkeypatch):
+        monkeypatch.setenv("VOICECLIP_RESEARCH_LOCAL_MODEL",
+                           "mlx-community/FromEnv-4bit")
+        config.load()
+        assert config.RESEARCH_LOCAL_MODEL == "mlx-community/FromEnv-4bit"

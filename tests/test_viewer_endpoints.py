@@ -297,3 +297,32 @@ class TestCustomVocabularySetting:
         code, r = _post(f"{server}/api/settings/update",
                         {"custom_vocabulary": 42})
         assert code == 400
+
+
+class TestResearchLocalProvider:
+    """Settings schema exposes `local` as a valid research provider choice,
+    and /api/queue surfaces the local model when the provider is set to it."""
+
+    def test_schema_includes_local_choice(self, server):
+        data = _get(server + "/api/settings")
+        choices = data["schema"]["research.provider"]["choices"]
+        assert "local" in choices
+        # local is NOT cloud — cloud_providers stays narrow
+        assert "local" not in data["schema"]["research.provider"]["cloud_providers"]
+
+    def test_schema_exposes_local_model_field(self, server):
+        data = _get(server + "/api/settings")
+        assert "research.local_model" in data["schema"]
+        assert data["schema"]["research.local_model"]["type"] == "text"
+
+    def test_settings_update_accepts_local_provider(self, server):
+        code, r = _post(f"{server}/api/settings/update",
+                        {"research.provider": "local"})
+        assert code == 200
+
+    def test_settings_update_accepts_local_model(self, server):
+        code, r = _post(f"{server}/api/settings/update",
+                        {"research.local_model": "mlx-community/Test-4bit"})
+        assert code == 200
+        after = _get(server + "/api/settings")
+        assert after["values"]["research.local_model"] == "mlx-community/Test-4bit"

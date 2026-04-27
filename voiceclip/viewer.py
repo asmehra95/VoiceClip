@@ -204,7 +204,12 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
         "group": "Research",
         "type": "select",
         "cloud_providers": ["openai", "anthropic"],
-        "choices": ["none", "openai", "anthropic"],
+        "choices": ["none", "local", "openai", "anthropic"],
+    },
+    "research.local_model": {
+        "group": "Research",
+        "type": "text",
+        "placeholder": "mlx-community/Qwen2.5-7B-Instruct-4bit",
     },
     "research.openai_model": {
         "group": "Research",
@@ -285,6 +290,7 @@ def _runtime_value(key: str):
         "summaries.anthropic_model": config.SUMMARIES_ANTHROPIC_MODEL,
         "summaries.style": config.SUMMARIES_STYLE,
         "research.provider": config.RESEARCH_PROVIDER,
+        "research.local_model": config.RESEARCH_LOCAL_MODEL,
         "research.openai_model": config.RESEARCH_OPENAI_MODEL,
         "research.anthropic_model": config.RESEARCH_ANTHROPIC_MODEL,
         "patterns.provider": config.PATTERNS_PROVIDER,
@@ -564,7 +570,8 @@ class Handler(BaseHTTPRequestHandler):
                 "research_enabled": config.RESEARCH_PROVIDER != "none",
                 "research_provider": config.RESEARCH_PROVIDER,
                 "research_model": (
-                    config.RESEARCH_OPENAI_MODEL if config.RESEARCH_PROVIDER == "openai"
+                    config.RESEARCH_LOCAL_MODEL if config.RESEARCH_PROVIDER == "local"
+                    else config.RESEARCH_OPENAI_MODEL if config.RESEARCH_PROVIDER == "openai"
                     else config.RESEARCH_ANTHROPIC_MODEL if config.RESEARCH_PROVIDER == "anthropic"
                     else None
                 ),

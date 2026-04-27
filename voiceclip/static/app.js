@@ -438,7 +438,9 @@
     const archived = data.archived || [];
     const hint = document.getElementById("queue_hint");
     if (!data.research_enabled) {
-      hint.innerHTML = `💡 Research is off. Enable it by adding <code class="inline">"research": {"provider": "openai"}</code> to ~/.voiceclip/config.json and exporting <code class="inline">OPENAI_API_KEY</code>.`;
+      hint.innerHTML = `💡 Research is off. Enable it by adding <code class="inline">"research": {"provider": "local"}</code> (or <code class="inline">"openai"</code>) to ~/.voiceclip/config.json.`;
+    } else if (data.research_provider === "local") {
+      hint.innerHTML = `Using local · ${shortModel(data.research_model)}. Answers from model knowledge only — no web search, no sources. Fine for conceptual topics, weak for time-sensitive ones.`;
     } else {
       hint.innerHTML = `Using ${data.research_provider} · ${shortModel(data.research_model)}. The model decides whether to search the web per topic.`;
     }
@@ -1208,7 +1210,8 @@
     "summaries.openai_model":  ["OpenAI model", null],
     "summaries.anthropic_model": ["Anthropic model", null],
     "summaries.style":         ["Summary style", "Descriptive (what you did) or Reflective (what you were thinking)"],
-    "research.provider":       ["Research provider", "Cloud only. Sends the topic text (and possibly to web search)."],
+    "research.provider":       ["Research provider", "Local stays on your Mac (no web search); cloud can search the web per topic."],
+    "research.local_model":    ["Local model", "Reuses mlx-lm. Any HuggingFace repo with -mlx or an MLX-compatible fork."],
     "research.openai_model":   ["OpenAI model", null],
     "research.anthropic_model":["Anthropic model", null],
     "patterns.provider":       ["Patterns provider", "Reads up to a week of entries. 'local' stays on your Mac."],

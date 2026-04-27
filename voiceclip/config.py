@@ -144,8 +144,11 @@ SUMMARIES_ANTHROPIC_MODEL = "claude-haiku-4-5"
 SUMMARIES_STYLE = "descriptive"  # "descriptive" | "reflective"
 
 # Research — queue-based research assistant. Off by default.
-# Provider: "none" | "openai" | "anthropic"
+# Provider: "none" | "local" | "openai" | "anthropic"
+# Local research answers from model knowledge only — no web search, no
+# sources. Cloud providers can use their server-side web search tool.
 RESEARCH_PROVIDER = "none"
+RESEARCH_LOCAL_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 RESEARCH_OPENAI_MODEL = "gpt-4o-mini"
 RESEARCH_ANTHROPIC_MODEL = "claude-haiku-4-5"
 
@@ -201,7 +204,8 @@ def load():
     global REFLECTION_HOTKEY, REFLECTION_HOTKEY_MODE, REFLECTION_MAX_DAYS
     global SUMMARIES_PROVIDER, SUMMARIES_LOCAL_MODEL
     global SUMMARIES_OPENAI_MODEL, SUMMARIES_ANTHROPIC_MODEL, SUMMARIES_STYLE
-    global RESEARCH_PROVIDER, RESEARCH_OPENAI_MODEL, RESEARCH_ANTHROPIC_MODEL
+    global RESEARCH_PROVIDER, RESEARCH_LOCAL_MODEL
+    global RESEARCH_OPENAI_MODEL, RESEARCH_ANTHROPIC_MODEL
     global PATTERNS_PROVIDER, PATTERNS_LOCAL_MODEL, PATTERNS_OPENAI_MODEL
     global PATTERNS_ANTHROPIC_MODEL, PATTERNS_WINDOW_DAYS
 
@@ -307,9 +311,13 @@ def load():
         "VOICECLIP_RESEARCH_PROVIDER",
         research_cfg.get("provider", "none"),
     )
-    if RESEARCH_PROVIDER not in ("none", "openai", "anthropic"):
+    if RESEARCH_PROVIDER not in ("none", "local", "openai", "anthropic"):
         log.warning("Invalid research.provider '%s', using 'none'", RESEARCH_PROVIDER)
         RESEARCH_PROVIDER = "none"
+    RESEARCH_LOCAL_MODEL = os.environ.get(
+        "VOICECLIP_RESEARCH_LOCAL_MODEL",
+        research_cfg.get("local_model", "mlx-community/Qwen2.5-7B-Instruct-4bit"),
+    )
     RESEARCH_OPENAI_MODEL = os.environ.get(
         "VOICECLIP_RESEARCH_OPENAI_MODEL",
         research_cfg.get("openai_model", "gpt-4o-mini"),
