@@ -132,3 +132,26 @@ class TestHumanizeLocalErrors:
         err = RuntimeError("something went wrong")
         msg = researcher._humanize_provider_error(err, "local", "model-id")
         assert msg.startswith("Local research failed:")
+
+
+class TestReasoningDirectiveOnLocalPath:
+    """The local research path must append REASONING_DIRECTIVE to the
+    system prompt so reasoning models route their scratchpad through
+    <think> tags (which complete_local then strips)."""
+
+    def test_local_system_prompt_includes_directive(self, monkeypatch):
+        captured = {}
+
+        def fake_local(*, system, user, model_id, max_tokens=400):
+            captured["system"] = system
+            return "stub brief"
+
+        monkeypatch.setattr(llm_provider, "complete_local", fake_local)
+
+        tid = history.create_research_topic("Conceptual topic")
+        researcher.research_topic(tid)
+
+        assert "<think>" in captured["system"]
+        assert "</think>" in captured["system"]
+        # The local prompt itself is still present (no-web-access rule)
+        assert "no web access" in captured["system"].lower()

@@ -69,9 +69,12 @@ def _run(provider: str, topic: str, model_id: str) -> tuple[str, list, bool]:
     user_content = f"<topic>{safe_topic}</topic>"
     if provider == "local":
         # Local path: no web search, no sources. The llm_provider layer
-        # already handles reasoning-model scratchpad stripping.
+        # already handles reasoning-model scratchpad stripping; we just
+        # need to append the reasoning-channel directive so the model
+        # routes its thinking through <think> tags we can strip.
+        system = _SYSTEM_PROMPT_LOCAL + "\n\n" + llm_provider.REASONING_DIRECTIVE
         text = llm_provider.complete_local(
-            system=_SYSTEM_PROMPT_LOCAL,
+            system=system,
             user=user_content,
             model_id=model_id,
             max_tokens=800,

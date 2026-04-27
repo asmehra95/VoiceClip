@@ -75,26 +75,29 @@ def complete_local(
 ) -> str:
     """Run a single system+user completion via mlx-lm. Returns text only.
 
-    Reasoning models (Qwen3, DeepSeek-R1, etc.) emit a scratchpad before
-    the real answer. We handle this two ways:
+    Reasoning-tuned models (Qwen3, DeepSeek-R1, QwQ, R1 distills) emit a
+    scratchpad before the real answer. The industry-standard convention
+    (established by DeepSeek-R1 and adopted by vLLM, SGLang, and the major
+    inference providers) is that the model wraps its chain-of-thought in
+    <think>...</think> tags, and everything after the closing tag is the
+    final answer — two distinct "channels" in one response.
 
-    - Append `/no_think` to the user prompt. Qwen3 recognizes this and
-      suppresses the reasoning block entirely. Models that don't recognize
-      it just see extra characters and ignore them. No harm.
-    - After generation, strip any `<think>...</think>` blocks that slipped
-      through anyway — DeepSeek-R1 and some Qwen variants emit these even
-      with the hint.
+    We rely on that convention and reinforce it via the system prompt:
+    callers should append REASONING_DIRECTIVE so the model knows exactly
+    where to put reasoning vs answer. Reasoning models comply trivially
+    (it matches their training). Non-reasoning models just skip the tags
+    and produce the answer directly — harmless.
 
-    The goal is a plain summary/brief/etc. with no chain-of-thought
-    leaking into the UI.
+    We deliberately do NOT send `/no_think` or `enable_thinking=False`.
+    The whole point of a reasoning model is that it thinks — we just
+    route the scratchpad into a channel we can strip.
     """
     from mlx_lm import generate
 
     model, tokenizer = _mlx_load(model_id)
     messages = [
         {"role": "system", "content": system},
-        # /no_think is a Qwen3 convention; other models ignore the suffix.
-        {"role": "user", "content": user + "\n/no_think"},
+        {"role": "user", "content": user},
     ]
     try:
         prompt = tokenizer.apply_chat_template(
@@ -105,41 +108,87 @@ def complete_local(
     out = generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens, verbose=False)
     if out.startswith(prompt):
         out = out[len(prompt):]
-    return _strip_reasoning(out).strip()
+    return _extract_answer(out).strip()
 
 
-# Matches <think>...</think>, <thinking>...</thinking>, <reasoning>...</reasoning>
-# across newlines. Non-greedy so back-to-back blocks are handled individually.
+# Shared directive appended to every local-model system prompt so reasoning
+# models route their scratchpad into the <think> channel we can strip.
+# Structural directives ("put X inside Y tags") are followed more reliably
+# by instruction-tuned models than prose asks ("don't show reasoning").
+# Non-reasoning models will simply skip the tags and produce the answer
+# directly — harmless.
+REASONING_DIRECTIVE = (
+    "If you need to reason through this, put your reasoning inside "
+    "<think>...</think> tags first. Your final answer must come after "
+    "the closing </think> tag."
+)
+
+
+# Matches a closed <think>...</think> block (also covers <thinking> and
+# <reasoning> variants some fine-tunes use). Non-greedy; DOTALL so it
+# spans newlines; case-insensitive so <THINK> works.
 _REASONING_BLOCK_RE = re.compile(
     r"<(think|thinking|reasoning)\b[^>]*>.*?</\1\s*>",
     re.DOTALL | re.IGNORECASE,
 )
 
+# Opener-only pattern (unclosed scratchpad — model hit max_tokens before
+# finishing its reasoning).
+_REASONING_OPEN_RE = re.compile(
+    r"<(think|thinking|reasoning)\b[^>]*>",
+    re.IGNORECASE,
+)
 
-def _strip_reasoning(text: str) -> str:
-    """Remove reasoning-model scratchpad blocks from a completion.
 
-    Handles the common cases:
-      - <think>...</think> (Qwen3, DeepSeek-R1, QwQ)
-      - <thinking>...</thinking> (some fine-tunes)
-      - <reasoning>...</reasoning> (Claude-style when the model mimics it)
-      - An unclosed <think>... that runs to the end (model hit max_tokens
-        mid-reasoning; strip everything after the opener rather than ship
-        a scratchpad with no answer).
+def _extract_answer(text: str) -> str:
+    """Pull the answer channel out of a reasoning-model completion.
 
-    Conservative: if nothing matches, the original text comes back unchanged.
+    Contract (DeepSeek-R1 / industry standard):
+
+        <think>...reasoning...</think> The real answer.
+
+    Cases handled:
+
+    1. Text contains one or more closed <think>...</think> blocks:
+       strip them and return the remainder (the answer channel).
+    2. Text contains an unclosed <think> with no closer (model ran out
+       of max_tokens mid-reasoning): return whatever preceded the opener
+       and log a warning. There's no reliable answer after an unclosed
+       opener.
+    3. No reasoning markers at all: pass through unchanged.
+
+    This is deliberately NOT robust against prose-format reasoning like
+    "Thinking Process: 1. Analyze...". A model that emits prose reasoning
+    has ignored both its own fine-tune convention and the explicit
+    REASONING_DIRECTIVE in the system prompt — surfacing that failure
+    visibly is the right behaviour. Hiding it with heuristics would shift
+    the problem from "this model doesn't work for me" to "sometimes the
+    summary is mysteriously truncated", which is worse.
     """
     if not text:
         return text
-    cleaned = _REASONING_BLOCK_RE.sub("", text)
-    # Handle unclosed opener: if "<think>" appears with no matching close
-    # after substitution, the model ran out of tokens mid-reasoning and
-    # there's nothing useful after it anyway.
-    low = cleaned.lower()
-    open_idx = low.find("<think>")
-    if open_idx >= 0 and "</think>" not in low[open_idx:]:
-        cleaned = cleaned[:open_idx]
-    return cleaned
+
+    # Case 1: closed blocks — strip every one, keep the remainder
+    cleaned, n_subs = _REASONING_BLOCK_RE.subn("", text)
+    if n_subs > 0:
+        return cleaned
+
+    # Case 2: unclosed opener — keep only the prefix before it
+    m = _REASONING_OPEN_RE.search(text)
+    if m:
+        log.warning(
+            "Local model emitted an unclosed reasoning opener — ran out of "
+            "max_tokens mid-thought. Answer channel is empty for this call."
+        )
+        return text[:m.start()]
+
+    # Case 3: no markers — pass through unchanged
+    return text
+
+
+# Backward-compat alias so existing callers and tests don't break.
+# _extract_answer is the preferred name going forward.
+_strip_reasoning = _extract_answer
 
 
 # ---------------------------------------------------------------------------

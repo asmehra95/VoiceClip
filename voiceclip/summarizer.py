@@ -71,6 +71,10 @@ def _build_prompt(date: str, entries: list[dict], style: str) -> tuple[str, str]
 
 def _run(provider: str, system: str, user: str, model_id: str) -> str:
     if provider == "local":
+        # Local models get the reasoning directive appended so Qwen3 /
+        # DeepSeek-R1 / etc. route their scratchpad into <think> tags we
+        # strip in llm_provider.complete_local.
+        system = system + "\n\n" + llm_provider.REASONING_DIRECTIVE
         return llm_provider.complete_local(
             system=system, user=user, model_id=model_id, max_tokens=400,
         )

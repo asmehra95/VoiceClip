@@ -169,3 +169,117 @@ class TestStripReasoning:
         out = llm_provider._strip_reasoning(raw)
         assert "Quick answer." in out
         assert "second-guessing" not in out
+
+
+class TestReasoningDirective:
+    """The REASONING_DIRECTIVE is the contract we tell every local-model
+    caller to append to their system prompt. It must mention <think> tags
+    explicitly and instruct the model to put the answer after the closing
+    tag — otherwise the extraction layer can't do its job."""
+
+    def test_directive_mentions_think_tag(self):
+        d = llm_provider.REASONING_DIRECTIVE
+        assert "<think>" in d
+        assert "</think>" in d
+
+    def test_directive_instructs_answer_after_closer(self):
+        d = llm_provider.REASONING_DIRECTIVE.lower()
+        # The directive must make it clear the final answer comes AFTER
+        # the closing tag — otherwise the model may put the answer inside.
+        assert "after" in d
+        assert "final answer" in d
+
+
+class TestExtractAnswer:
+    """Covers the DeepSeek-R1 channel-separator contract more directly
+    than the legacy tests above. _extract_answer is the preferred name;
+    _strip_reasoning is kept as an alias."""
+
+    def test_canonical_channel_split(self):
+        raw = "<think>I should summarize what happened.</think>\n\nYou spent the morning on research."
+        out = llm_provider._extract_answer(raw).strip()
+        # Reasoning is gone, answer remains verbatim
+        assert out == "You spent the morning on research."
+
+    def test_answer_only_passes_through(self):
+        """Non-reasoning models produce plain answers. Must not touch them."""
+        raw = "Plain summary with no tags."
+        assert llm_provider._extract_answer(raw) == raw
+
+    def test_alias_matches_extract_answer(self):
+        """_strip_reasoning is a backward-compat alias and must behave
+        identically to _extract_answer."""
+        for sample in [
+            "plain",
+            "<think>x</think>answer",
+            "<think>never closed",
+            "",
+        ]:
+            assert (
+                llm_provider._strip_reasoning(sample)
+                == llm_provider._extract_answer(sample)
+            )
+
+    def test_unclosed_think_returns_prefix_only(self):
+        """Model ran out of max_tokens mid-thought — no clean answer exists."""
+        raw = "<think>Let me think about this for a very long..."
+        assert llm_provider._extract_answer(raw).strip() == ""
+
+    def test_prefix_before_unclosed_is_kept(self):
+        """If the model wrote something useful before opening <think> and
+        never closed it, keep what came before."""
+        raw = "Quick note.\n\n<think>and now I keep reasoning..."
+        out = llm_provider._extract_answer(raw)
+        assert "Quick note." in out
+        assert "reasoning" not in out
+
+    def test_prose_reasoning_passes_through_unmodified(self):
+        """Models that ignore the directive and emit prose reasoning
+        ("Thinking Process: 1. ...") must surface visibly — don't silently
+        chop them."""
+        raw = (
+            "Thinking Process:\n"
+            "1. Analyze the request\n"
+            "2. Draft the summary\n\n"
+            "You spent the day coding."
+        )
+        out = llm_provider._extract_answer(raw)
+        # The whole thing comes through — including the reasoning — so the
+        # user sees that their model choice is emitting unstructured output
+        # and can switch.
+        assert out == raw
+
+
+class TestCompleteLocalNoNoThink:
+    """Regression: we used to append /no_think to the user content. That
+    was unreliable (Qwen3-only) and pointless now that we use <think>-tag
+    extraction. Verify it's gone."""
+
+    def test_user_prompt_is_not_suffixed(self, monkeypatch):
+        """complete_local must pass the user content through verbatim."""
+        captured = {}
+
+        class FakeTokenizer:
+            def apply_chat_template(self, messages, **kwargs):
+                captured["messages"] = messages
+                return "PROMPT"
+
+        def fake_generate(model, tokenizer, **kwargs):
+            return kwargs.get("prompt", "PROMPT") + "some answer"
+
+        llm_provider._mlx_cache["test-model"] = ("model-obj", FakeTokenizer())
+        # Stub mlx_lm.generate so the test runs without mlx-lm installed.
+        import sys
+        import types
+        fake_mlx = types.ModuleType("mlx_lm")
+        fake_mlx.generate = fake_generate
+        monkeypatch.setitem(sys.modules, "mlx_lm", fake_mlx)
+
+        llm_provider.complete_local(
+            system="sys",
+            user="the user content",
+            model_id="test-model",
+        )
+        # The user message is exactly the user content — no /no_think suffix
+        user_msg = next(m for m in captured["messages"] if m["role"] == "user")
+        assert user_msg["content"] == "the user content"

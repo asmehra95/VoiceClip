@@ -145,6 +145,11 @@ def _parse_json_safely(raw: str) -> dict:
 
 def _run(provider: str, system: str, user: str, model_id: str) -> str:
     if provider == "local":
+        # Reasoning models route their scratchpad through <think> tags we
+        # strip in complete_local. For patterns the final answer is JSON,
+        # so the <think> channel keeps the JSON clean. _parse_json_safely
+        # also tolerates prose prefixes as a second line of defense.
+        system = system + "\n\n" + llm_provider.REASONING_DIRECTIVE
         return llm_provider.complete_local(
             system=system, user=user, model_id=model_id, max_tokens=900,
         )
