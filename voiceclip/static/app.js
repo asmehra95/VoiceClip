@@ -31,10 +31,16 @@
   function el(tag, attrs, children) {
     const node = document.createElement(tag);
     if (attrs) for (const k in attrs) {
-      if (k === "class") node.className = attrs[k];
-      else if (k === "html") node.innerHTML = attrs[k];
-      else if (k.startsWith("on")) node.addEventListener(k.slice(2), attrs[k]);
-      else node.setAttribute(k, attrs[k]);
+      const v = attrs[k];
+      // Null/undefined means "skip this attribute" — matches React-ish
+      // ergonomics and fixes the `disabled: condition ? null : "disabled"`
+      // idiom, which used to silently set disabled="null" (truthy to the
+      // browser) and block clicks on otherwise-live buttons.
+      if (v == null) continue;
+      if (k === "class") node.className = v;
+      else if (k === "html") node.innerHTML = v;
+      else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+      else node.setAttribute(k, v);
     }
     if (children) for (const c of [].concat(children)) {
       if (c == null) continue;

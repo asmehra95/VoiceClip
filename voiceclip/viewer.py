@@ -505,6 +505,27 @@ class Handler(BaseHTTPRequestHandler):
         ctype, _ = mimetypes.guess_type(str(target))
         ctype = ctype or "application/octet-stream"
         data = target.read_bytes()
+
+        # For index.html, inject mtime-based cache-bust tokens onto the
+        # asset URLs. Browsers love to cache /static/app.js even when we
+        # send no-store (bfcache, service workers, aggressive tabs). By
+        # changing the URL on every file change, any cache is forced to
+        # treat the asset as a new resource. Solves the "I edited the JS
+        # but the button still does nothing" class of bug.
+        if rel_path == "index.html":
+            try:
+                js_mtime = int((_STATIC_DIR / "app.js").stat().st_mtime)
+                css_mtime = int((_STATIC_DIR / "app.css").stat().st_mtime)
+                text = data.decode("utf-8")
+                text = text.replace(
+                    "/static/app.js", f"/static/app.js?v={js_mtime}"
+                ).replace(
+                    "/static/app.css", f"/static/app.css?v={css_mtime}"
+                )
+                data = text.encode("utf-8")
+            except Exception as e:
+                log.debug("Could not version static assets: %s", e)
+
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
