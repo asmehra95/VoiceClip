@@ -34,17 +34,19 @@ _mlx_cache_lock = threading.Lock()
 
 
 # Model types that go straight to mlx-vlm without trying mlx-lm first.
-# Covers Gemma 4 (vision+audio checkpoint even when model_type ends in
-# _text — the weight files carry the full tower), and any model whose
-# type contains "vl" (Qwen-VL, LLaVA-VL variants) or "vision".
+# These are full multimodal checkpoints (vision + audio towers alongside
+# the language model) that mlx-lm genuinely can't load. Using the preflight
+# saves ~5s of wasted load work per cold start for these.
 #
-# The list is kept small and exact rather than a broad regex so we only
-# skip the fast mlx-lm path for checkpoints that we KNOW will fail in it.
-# Unknown model types fall through to the try-mlx-lm-first logic.
+# Note: do NOT list `gemma4_text` or `gemma3_text` here — those are
+# mlx-lm model types. Some "text-only" checkpoints on HuggingFace are
+# mis-packaged (include KV-shared weights they shouldn't); those fail
+# in mlx-lm with a specific signature but aren't loadable by mlx-vlm
+# either. The fallback path can't rescue them, so we surface a clear
+# error with a pointer at the standard (non-OptiQ) variant.
 _MLX_VLM_PREFERRED_TYPES: frozenset[str] = frozenset({
     "gemma4",
-    "gemma4_text",
-    "gemma3n",   # Gemma 3n is also multimodal; full checkpoint fails in mlx-lm
+    "gemma3n",
 })
 
 
@@ -145,9 +147,45 @@ def _mlx_load(model_id: str) -> tuple[str, Any, Any]:
             _mlx_cache[model_id] = ("mlx_lm", model, tokenizer)
             return _mlx_cache[model_id]
         except ValueError as e:
-            if "parameters not in model" in str(e).lower():
+            msg = str(e)
+            low = msg.lower()
+            # Two very different "parameters not in model" failures:
+            #
+            # (a) Full multimodal checkpoint — extras are `language_model.*`,
+            #     `vision_tower.*`, `audio_tower.*` prefixes. mlx-vlm can
+            #     load this.
+            #
+            # (b) Mis-packaged text-only checkpoint (e.g. the OptiQ Gemma 4
+            #     variants on mlx-community at time of writing). Extras are
+            #     plain `model.layers.N.self_attn.k_proj` etc. in the
+            #     KV-shared layer range. mlx-vlm can't load these either
+            #     (it has no `gemma4_text` loader). Surface a specific
+            #     error pointing at the standard variant.
+            if "parameters not in model" in low:
+                if (
+                    "language_model." in msg
+                    or "vision_tower" in low
+                    or "audio_tower" in low
+                ):
+                    log.info(
+                        "%s is a multimodal checkpoint; falling back to mlx-vlm",
+                        model_id,
+                    )
+                    return _load_via_vlm(model_id)
+                # Mis-packaged text-only checkpoint — mlx-lm sees extra KV
+                # weights that shouldn't exist in a KV-shared layer.
+                if "k_proj" in low or "k_norm" in low:
+                    raise RuntimeError(
+                        f"'{model_id}' appears to be a mis-packaged text-only "
+                        "checkpoint — it carries KV-shared-layer weights "
+                        "that shouldn't be in the file. mlx-lm and mlx-vlm "
+                        "both reject it. Try the standard (non-OptiQ) "
+                        "variant, e.g. mlx-community/gemma-4-e4b-it-4bit "
+                        "or mlx-community/gemma-4-e2b-it-4bit."
+                    ) from e
+                # Generic "extras" — try vlm as a last resort
                 log.info(
-                    "%s didn't load with mlx-lm (multimodal checkpoint); "
+                    "%s has extra weights mlx-lm doesn't recognize; "
                     "falling back to mlx-vlm", model_id,
                 )
                 return _load_via_vlm(model_id)

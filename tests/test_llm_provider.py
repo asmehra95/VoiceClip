@@ -329,13 +329,38 @@ class TestMlxVlmBackend:
 
         self._stub_mlx_lm(monkeypatch, lm_load)
         self._stub_mlx_vlm(monkeypatch, vlm_load)
-        self._stub_preflight(monkeypatch, "gemma4_text")
+        # The full multimodal Gemma 4 has model_type="gemma4" (without
+        # _text). gemma4_text is a different, problematic case — see
+        # test_optiq_style_broken_checkpoint_gets_readable_error.
+        self._stub_preflight(monkeypatch, "gemma4")
 
         backend, model, handle = llm_provider._mlx_load(
             "mlx-community/gemma-4-e4b-it-4bit")
         assert backend == "mlx_vlm"
         assert lm_called["n"] == 0
         assert vlm_called["n"] == 1
+
+    def test_optiq_style_broken_checkpoint_gets_readable_error(self, monkeypatch):
+        """Mis-packaged text-only checkpoints (carry k_proj/k_norm in
+        layers that should be KV-shared) can't load in either library.
+        User should see a clear pointer to the standard variant rather
+        than a 700-line traceback."""
+        def lm_load(_):
+            # Mimic the real mlx-lm error signature for OptiQ Gemma 4:
+            # plain `model.*` prefix (no `language_model.`), includes
+            # k_proj/k_norm tokens.
+            raise ValueError(
+                "Received 140 parameters not in model: \n"
+                "model.layers.15.self_attn.k_norm.weight,\n"
+                "model.layers.15.self_attn.k_proj.biases,\n"
+                "model.layers.15.self_attn.k_proj.scales,\n..."
+            )
+        self._stub_mlx_lm(monkeypatch, lm_load)
+        self._stub_mlx_vlm(monkeypatch, lambda _: ("vlm-model", "proc"))
+        self._stub_preflight(monkeypatch, "gemma4_text")
+
+        with pytest.raises(RuntimeError, match="mis-packaged"):
+            llm_provider._mlx_load("mlx-community/gemma-4-e4b-it-OptiQ-4bit")
 
     def test_text_only_model_uses_mlx_lm(self, monkeypatch):
         """The common case — Qwen2.5, Llama, etc. — must use mlx-lm
@@ -359,13 +384,17 @@ class TestMlxVlmBackend:
         assert vlm_called["n"] == 0
 
     def test_fallback_on_parameters_not_in_model(self, monkeypatch):
-        """When mlx-lm raises the multimodal ValueError for a model the
-        preflight didn't flag, we still fall back to mlx-vlm."""
+        """When mlx-lm raises the multimodal ValueError with language_model.*
+        prefixes, we fall back to mlx-vlm — this is the full-Gemma-4 /
+        Qwen-VL case."""
         lm_called = {"n": 0}
 
         def lm_load(_):
             lm_called["n"] += 1
-            raise ValueError("Received 42 parameters not in model:\nweights...")
+            raise ValueError(
+                "Received 42 parameters not in model:\n"
+                "language_model.model.layers.0.mlp.weight,\n..."
+            )
 
         def vlm_load(_):
             return ("vlm-model", "processor")
@@ -374,7 +403,7 @@ class TestMlxVlmBackend:
         self._stub_mlx_vlm(monkeypatch, vlm_load)
         self._stub_preflight(monkeypatch, "unknown_type")
 
-        backend, model, handle = llm_provider._mlx_load("some/mystery-model")
+        backend, model, handle = llm_provider._mlx_load("some/mystery-vlm")
         assert backend == "mlx_vlm"
         assert lm_called["n"] == 1
 
@@ -421,8 +450,10 @@ class TestMlxVlmBackend:
         import sys
         self._stub_mlx_lm(monkeypatch,
                           lambda _: (_ for _ in ()).throw(
-                              ValueError("Received 10 parameters not in model")))
-        self._stub_preflight(monkeypatch, "qwen2")
+                              ValueError(
+                                  "Received 10 parameters not in model:\n"
+                                  "language_model.foo")))
+        self._stub_preflight(monkeypatch, "unknown_vlm_type")
         # Ensure mlx_vlm import fails
         monkeypatch.setitem(sys.modules, "mlx_vlm", None)
 
