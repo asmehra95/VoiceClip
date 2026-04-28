@@ -467,3 +467,27 @@ class TestModelsEndpoints:
     def test_delete_rejects_wrong_type(self, server):
         code, r = _post(f"{server}/api/models/delete", {"repo_id": 42})
         assert code == 400
+
+
+class TestRecommendedModelsEndpoint:
+    """GET /api/models/recommended drives the Settings Quick-pick dropdown."""
+
+    def test_returns_full_list_without_feature(self, server):
+        data = _get(server + "/api/models/recommended")
+        assert "models" in data
+        assert isinstance(data["models"], list)
+        # The shipped models.json always has at least one entry
+        assert len(data["models"]) > 0
+        m = data["models"][0]
+        assert "id" in m and "label" in m and "backend" in m
+
+    def test_filters_by_feature(self, server):
+        data = _get(server + "/api/models/recommended?feature=research")
+        assert all("research" in m["good_for"] for m in data["models"])
+
+    def test_ignores_unknown_feature(self, server):
+        """Bad feature values silently fall back to the full list."""
+        data = _get(server + "/api/models/recommended?feature=bogus")
+        # Falls through to no filter (not an error) — UI won't pass bogus
+        # values, but if it did, better to show everything than nothing.
+        assert isinstance(data["models"], list)

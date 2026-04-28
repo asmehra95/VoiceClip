@@ -459,3 +459,92 @@ class TestMlxVlmBackend:
 
         with pytest.raises(RuntimeError, match="mlx-vlm"):
             llm_provider._mlx_load("gemma-4-test")
+
+
+class TestRecommendedModels:
+    """The curated model list in voiceclip/models.json drives the
+    Settings picker dropdown. Tests cover:
+      - parsing real models.json shipped with the package
+      - per-feature filtering (good_for tag)
+      - graceful degradation when the file is missing or malformed
+    """
+
+    def setup_method(self):
+        # Each test starts with a fresh cache
+        llm_provider._reset_recommended_models()
+
+    def test_returns_list_with_expected_fields(self):
+        models = llm_provider.list_recommended_models()
+        assert len(models) > 0, "models.json ships empty — that's a bug"
+        for m in models:
+            assert "id" in m
+            assert "label" in m
+            assert "size_gb" in m
+            assert "backend" in m
+            assert "good_for" in m
+            # At least one recommended model must actually be a real
+            # HuggingFace repo id — mlx-community prefix is the canonical
+            # one for MLX ports.
+        ids = [m["id"] for m in models]
+        assert any(i.startswith("mlx-community/") for i in ids)
+
+    def test_filter_by_feature(self):
+        research = llm_provider.list_recommended_models(feature="research")
+        summaries = llm_provider.list_recommended_models(feature="summaries")
+        assert len(research) > 0 and len(summaries) > 0
+        # Everything returned for a feature must have that tag
+        assert all("research" in m["good_for"] for m in research)
+        assert all("summaries" in m["good_for"] for m in summaries)
+
+    def test_unknown_feature_filters_to_empty(self):
+        # Features that don't appear in any model's good_for tag
+        assert llm_provider.list_recommended_models(feature="bogus") == []
+
+    def test_cache_hits_on_second_call(self, monkeypatch):
+        """Second call should not re-open the file — proves the cache works."""
+        import builtins
+        real_open = builtins.open
+        open_calls = {"n": 0}
+
+        def counting_open(*args, **kwargs):
+            open_calls["n"] += 1
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", counting_open)
+        llm_provider.list_recommended_models()
+        llm_provider.list_recommended_models()
+        llm_provider.list_recommended_models(feature="summaries")
+        # Only the first call reads the file
+        assert open_calls["n"] == 1
+
+    def test_missing_file_returns_empty_not_crash(self, monkeypatch):
+        """If models.json disappears, the Settings UI's dropdown just
+        hides rather than breaking the whole tab."""
+        monkeypatch.setattr(
+            llm_provider, "_RECOMMENDED_MODELS_PATH", "/nonexistent/models.json",
+        )
+        assert llm_provider.list_recommended_models() == []
+
+    def test_malformed_json_returns_empty(self, tmp_path, monkeypatch):
+        bad = tmp_path / "broken.json"
+        bad.write_text("{not valid json")
+        monkeypatch.setattr(llm_provider, "_RECOMMENDED_MODELS_PATH", str(bad))
+        assert llm_provider.list_recommended_models() == []
+
+    def test_entries_without_id_are_dropped(self, tmp_path, monkeypatch):
+        """Defensive against partially-edited models.json — skip invalid
+        entries, don't fail the whole load."""
+        import json as _json
+        path = tmp_path / "mixed.json"
+        path.write_text(_json.dumps({
+            "models": [
+                {"id": "good/model", "label": "OK", "size_gb": 1.0,
+                 "backend": "mlx-lm", "good_for": ["summaries"]},
+                {"label": "Missing id"},  # bad: no id
+                "not a dict",              # bad: wrong type
+            ],
+        }))
+        monkeypatch.setattr(llm_provider, "_RECOMMENDED_MODELS_PATH", str(path))
+        models = llm_provider.list_recommended_models()
+        assert len(models) == 1
+        assert models[0]["id"] == "good/model"

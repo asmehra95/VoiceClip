@@ -257,6 +257,63 @@ def reset_mlx_cache():
 
 
 # ---------------------------------------------------------------------------
+# Curated model list (read from voiceclip/models.json at import)
+# ---------------------------------------------------------------------------
+# Users can still pick any HuggingFace model by pasting a repo id. The
+# curated list exists so they don't *have* to know what's good — and so
+# the "default" for each feature comes from one version-controlled place.
+#
+# The list is a shipped-with-the-package JSON file, NOT a user-editable
+# config. Lives in the same directory as this module so `pip install .`
+# picks it up automatically. Parsed once at import; swap the file and
+# restart the viewer to pick up changes.
+
+_RECOMMENDED_MODELS_PATH = os.path.join(
+    os.path.dirname(__file__), "models.json",
+)
+_recommended_models_cache: list[dict] | None = None
+
+
+def list_recommended_models(feature: str | None = None) -> list[dict]:
+    """Return the curated model list. Optionally filter to models flagged
+    as good for a specific feature ("summaries" / "research" / "patterns").
+
+    Each entry is a dict with id, label, size_gb, backend, good_for, note.
+    Swallows any parse error and returns [] — the UI's dropdown is purely
+    additive, so a broken models.json shouldn't break Settings.
+    """
+    global _recommended_models_cache
+    if _recommended_models_cache is None:
+        try:
+            import json as _json
+            with open(_RECOMMENDED_MODELS_PATH, "r") as f:
+                data = _json.loads(f.read())
+            models = data.get("models", [])
+            if isinstance(models, list):
+                _recommended_models_cache = [
+                    m for m in models if isinstance(m, dict) and m.get("id")
+                ]
+            else:
+                _recommended_models_cache = []
+        except Exception as e:
+            log.warning("Could not load curated model list: %s", e)
+            _recommended_models_cache = []
+
+    if feature is None:
+        return list(_recommended_models_cache)
+    return [
+        m for m in _recommended_models_cache
+        if feature in (m.get("good_for") or [])
+    ]
+
+
+def _reset_recommended_models():
+    """Test hook — force re-read of models.json."""
+    global _recommended_models_cache
+    _recommended_models_cache = None
+
+
+# ---------------------------------------------------------------------------
 # Local (mlx-lm)
 # ---------------------------------------------------------------------------
 

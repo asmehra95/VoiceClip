@@ -785,6 +785,17 @@ class Handler(BaseHTTPRequestHandler):
             self._json(_list_cached_models())
             return
 
+        if path == "/api/models/recommended":
+            # Curated list of known-good local models for the picker
+            # dropdown in Settings. Optional `?feature=summaries` filter
+            # limits to models flagged as good for that feature.
+            from voiceclip.llm_provider import list_recommended_models
+            feat = (q.get("feature") or [None])[0]
+            if feat not in (None, "summaries", "research", "patterns"):
+                feat = None
+            self._json({"models": list_recommended_models(feature=feat)})
+            return
+
         self._not_found()
 
     def do_POST(self):

@@ -1400,7 +1400,89 @@
       clearTimeout(inp._t);
       commitSetting(key, inp.value);
     });
+
+    // For *.local_model fields, surface a curated "Quick pick" dropdown
+    // above the text input. Selecting an option fills the input (and
+    // commits via the input's own handler). Free-form paste still works.
+    if (key.endsWith(".local_model")) {
+      const wrap = document.createElement("div");
+      wrap.className = "local-model-input";
+      const picker = buildRecommendedPicker(key, inp);
+      wrap.appendChild(picker);
+      wrap.appendChild(inp);
+      return wrap;
+    }
     return inp;
+  }
+
+  // Build the "Quick pick" dropdown for a *.local_model field.
+  // Populates from GET /api/models/recommended?feature=<summaries|research|patterns>.
+  // Rendered immediately with a loading placeholder; options swap in when
+  // the fetch resolves. If the fetch fails we quietly hide the dropdown
+  // rather than showing an error — manual text input still works.
+  function buildRecommendedPicker(key, targetInput) {
+    const feature = key.split(".")[0];  // summaries.local_model -> summaries
+    const wrapper = document.createElement("div");
+    wrapper.className = "recommended-picker";
+
+    const select = document.createElement("select");
+    select.className = "recommended-picker-select";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Quick pick a model…";
+    select.appendChild(placeholder);
+    wrapper.appendChild(select);
+
+    const note = el("div", {class: "recommended-picker-note"}, "");
+    wrapper.appendChild(note);
+
+    (async () => {
+      try {
+        const r = await fetch(`/api/models/recommended?feature=${feature}`);
+        const data = await r.json();
+        const models = data.models || [];
+        if (!models.length) {
+          wrapper.style.display = "none";
+          return;
+        }
+        for (const m of models) {
+          const opt = document.createElement("option");
+          opt.value = m.id;
+          opt.dataset.note = m.note || "";
+          opt.textContent = `${m.label} · ${m.size_gb.toFixed(1)} GB · ${m.backend}`;
+          select.appendChild(opt);
+        }
+        // If the current value matches a known model, highlight it
+        if (targetInput.value) {
+          const match = Array.from(select.options).find(
+            o => o.value === targetInput.value,
+          );
+          if (match) {
+            select.value = match.value;
+            note.textContent = match.dataset.note || "";
+          }
+        }
+      } catch(e) {
+        wrapper.style.display = "none";
+      }
+    })();
+
+    select.addEventListener("change", () => {
+      const chosen = select.value;
+      if (!chosen) return;  // placeholder row
+      targetInput.value = chosen;
+      // Update note hint
+      const opt = select.options[select.selectedIndex];
+      note.textContent = opt.dataset.note || "";
+      // Trigger the text input's own commit path — same debounce as a
+      // manual paste would get.
+      clearTimeout(targetInput._t);
+      targetInput._t = setTimeout(
+        () => commitSetting(key, chosen), 50,
+      );
+    });
+
+    return wrapper;
   }
 
   async function commitSetting(key, value) {
