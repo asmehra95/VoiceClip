@@ -290,6 +290,15 @@ class TestMlxVlmBackend:
     (Gemma 4, Gemma 3n, *_vl). Everything else tries mlx-lm first and only
     falls back to mlx-vlm on the 'parameters not in model' signature."""
 
+    def setup_method(self):
+        # The MLX worker thread imports mlx_lm / mlx_vlm lazily. Tests
+        # inject stubs via monkeypatch.setitem(sys.modules, ...) — those
+        # stubs work on any thread, but a stale worker from a previous
+        # test might have state we don't want. Start every test with a
+        # fresh worker and empty model cache.
+        llm_provider._reset_worker()
+        llm_provider.reset_mlx_cache()
+
     def _stub_mlx_lm(self, monkeypatch, behavior):
         """Install a fake mlx_lm with a load() function that follows `behavior`.
 
@@ -548,3 +557,138 @@ class TestRecommendedModels:
         models = llm_provider.list_recommended_models()
         assert len(models) == 1
         assert models[0]["id"] == "good/model"
+
+
+class TestWorkerThread:
+    """Regression guards for the MLX worker thread.
+
+    The worker exists because mlx-vlm creates a non-thread-local
+    `generation_stream` at import time, which then fails from any other
+    thread. Running every MLX touch through a single dedicated thread
+    bypasses the issue — these tests ensure that contract holds.
+    """
+
+    def setup_method(self):
+        llm_provider._reset_worker()
+        llm_provider.reset_mlx_cache()
+
+    def test_submitted_work_runs_on_worker_not_caller(self):
+        """Every call to _run_on_worker should execute on the dedicated
+        worker thread, never on the calling thread."""
+        import threading as _t
+        caller_thread = _t.current_thread().ident
+        seen = {"worker": None}
+
+        def capture():
+            seen["worker"] = _t.current_thread().ident
+            return "ok"
+
+        result = llm_provider._run_on_worker(capture)
+        assert result == "ok"
+        assert seen["worker"] is not None
+        assert seen["worker"] != caller_thread
+
+    def test_concurrent_submissions_are_serialized(self):
+        """Two concurrent submissions must both succeed — the worker
+        queue serializes them. Without serialization mlx-vlm's stream
+        assumptions would break if two threads entered generate() at once."""
+        import threading as _t
+        import time
+
+        running = {"count": 0, "max": 0}
+        lock = _t.Lock()
+
+        def stepwise_task():
+            with lock:
+                running["count"] += 1
+                running["max"] = max(running["max"], running["count"])
+            time.sleep(0.05)  # hold the worker briefly
+            with lock:
+                running["count"] -= 1
+            return "done"
+
+        threads = [
+            _t.Thread(
+                target=lambda: llm_provider._run_on_worker(stepwise_task),
+            )
+            for _ in range(3)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+            assert not t.is_alive()
+        # At no point did more than one task run concurrently
+        assert running["max"] == 1
+
+    def test_exception_propagates_to_caller(self):
+        """If the worker raises, the caller sees that exception, not a
+        queue error or None."""
+        def boom():
+            raise ValueError("intentional test failure")
+
+        with pytest.raises(ValueError, match="intentional test failure"):
+            llm_provider._run_on_worker(boom)
+
+    def test_worker_recovers_from_exception(self):
+        """A bad submission shouldn't kill the worker — subsequent calls
+        must still work."""
+        def boom():
+            raise RuntimeError("oops")
+
+        try:
+            llm_provider._run_on_worker(boom)
+        except RuntimeError:
+            pass
+
+        # Worker is still alive and responsive
+        assert llm_provider._run_on_worker(lambda: "ok") == "ok"
+
+    def test_complete_local_dispatches_through_worker(self, monkeypatch):
+        """End-to-end: complete_local submits work to the worker rather
+        than calling MLX from the caller's thread."""
+        import threading as _t
+        caller_thread = _t.current_thread().ident
+        seen = {"load_thread": None, "generate_thread": None}
+
+        class FakeTokenizer:
+            def apply_chat_template(self, messages, **kwargs):
+                return "PROMPT"
+
+        def fake_lm_load(model_id):
+            seen["load_thread"] = _t.current_thread().ident
+            return "model-obj", FakeTokenizer()
+
+        def fake_generate(model, tokenizer, **kwargs):
+            seen["generate_thread"] = _t.current_thread().ident
+            return kwargs.get("prompt", "") + "the answer"
+
+        import sys, types
+        fake_lm = types.ModuleType("mlx_lm")
+        fake_lm.load = fake_lm_load
+        fake_lm.generate = fake_generate
+        monkeypatch.setitem(sys.modules, "mlx_lm", fake_lm)
+        # Stub mlx.core so the `with mx.stream(mx.gpu):` wrappers pass
+        fake_mx_core = types.ModuleType("mlx.core")
+        import contextlib
+        fake_mx_core.stream = lambda _: contextlib.nullcontext()
+        fake_mx_core.gpu = object()
+        fake_mx = types.ModuleType("mlx")
+        fake_mx.core = fake_mx_core
+        monkeypatch.setitem(sys.modules, "mlx", fake_mx)
+        monkeypatch.setitem(sys.modules, "mlx.core", fake_mx_core)
+        # Preflight should fall through so mlx-lm is attempted
+        monkeypatch.setattr(llm_provider, "_preflight_model_type",
+                            lambda _: "qwen2")
+
+        result = llm_provider.complete_local(
+            system="sys", user="u", model_id="mlx/fake", max_tokens=100,
+        )
+        assert result == "the answer"
+        # Both load and generate ran on the worker — NOT on the caller thread
+        assert seen["load_thread"] is not None
+        assert seen["generate_thread"] is not None
+        assert seen["load_thread"] != caller_thread
+        assert seen["generate_thread"] != caller_thread
+        # And they ran on the SAME thread — that's the whole point
+        assert seen["load_thread"] == seen["generate_thread"]

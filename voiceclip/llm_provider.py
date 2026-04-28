@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import re
 import threading
 from typing import Any, Callable
@@ -86,8 +87,110 @@ _mlx_cache: dict[str, tuple[str, Any, Any]] = {}
 _mlx_cache_lock = threading.Lock()
 
 
+# ---------------------------------------------------------------------------
+# Dedicated worker thread for all MLX calls
+# ---------------------------------------------------------------------------
+# Why a worker thread: MLX streams are thread-local. mlx-vlm creates its
+# `generation_stream` with `mx.new_stream()` (not the thread-local variant
+# mlx-lm uses), and that stream belongs to whichever thread imported the
+# module. When the viewer — which uses ThreadingHTTPServer — calls into
+# mlx-vlm from an HTTP handler thread, mlx-vlm's internal
+# `with mx.stream(generation_stream):` fails with "There is no Stream(gpu, 0)
+# in current thread" because the handler thread isn't the import thread.
+#
+# The fix: run every MLX call (both load and generate, both mlx-lm and
+# mlx-vlm) on a single persistent worker thread owned by this module.
+# The worker thread also imports the MLX modules, so all streams get
+# created on the correct thread and stay valid for the process lifetime.
+#
+# The worker is spun up lazily on first submission and stays alive until
+# the process exits. Submissions are serialized — concurrent summary /
+# research / patterns requests queue up rather than racing — but this is
+# the right behavior anyway since a single MLX model can only generate
+# one stream at a time without explicit batching.
+
+_worker_queue: "queue.Queue[tuple[Callable, tuple, dict, queue.Queue]] | None" = None
+_worker_thread: threading.Thread | None = None
+_worker_lock = threading.Lock()
+
+
+def _worker_loop(work_queue: "queue.Queue[tuple[Callable, tuple, dict, queue.Queue]]"):
+    """Pull tasks off the queue and run them, shipping results back via the
+    caller-provided reply queue. A sentinel of None on the work queue means
+    shut down (used only by tests)."""
+    while True:
+        item = work_queue.get()
+        if item is None:
+            return
+        func, args, kwargs, reply_queue = item
+        try:
+            result = func(*args, **kwargs)
+            reply_queue.put(("ok", result))
+        except BaseException as e:  # surface every exception back
+            reply_queue.put(("err", e))
+
+
+def _ensure_worker() -> "queue.Queue[tuple[Callable, tuple, dict, queue.Queue]]":
+    """Return the worker queue, starting the worker thread on first call."""
+    global _worker_queue, _worker_thread
+    if _worker_queue is not None and _worker_thread is not None and _worker_thread.is_alive():
+        return _worker_queue
+    with _worker_lock:
+        if _worker_queue is not None and _worker_thread is not None and _worker_thread.is_alive():
+            return _worker_queue
+        _worker_queue = queue.Queue()
+        _worker_thread = threading.Thread(
+            target=_worker_loop, args=(_worker_queue,),
+            name="voiceclip-mlx-worker", daemon=True,
+        )
+        _worker_thread.start()
+        return _worker_queue
+
+
+def _run_on_worker(func: Callable, *args, **kwargs):
+    """Submit a callable to the MLX worker and block until it returns.
+
+    Re-raises any exception raised on the worker so callers see the
+    original error with their own stack. Must be used for every path
+    that loads or runs an MLX model — submitting from a handler thread
+    is the whole point.
+    """
+    work_queue = _ensure_worker()
+    reply: queue.Queue = queue.Queue()
+    work_queue.put((func, args, kwargs, reply))
+    status, payload = reply.get()
+    if status == "ok":
+        return payload
+    raise payload
+
+
+def _reset_worker():
+    """Test hook — stop the worker and clear references. Tests that stub
+    MLX modules need a fresh worker so the stubs take effect."""
+    global _worker_queue, _worker_thread
+    with _worker_lock:
+        if _worker_queue is not None:
+            _worker_queue.put(None)
+        if _worker_thread is not None and _worker_thread.is_alive():
+            _worker_thread.join(timeout=2)
+        _worker_queue = None
+        _worker_thread = None
+
+
 def _mlx_load(model_id: str) -> tuple[str, Any, Any]:
-    """Cached load of a local MLX model.
+    """Public entry point: returns a cached MLX model tuple.
+
+    Dispatches the actual load onto the worker thread so every MLX call
+    happens on the same thread — necessary because mlx-vlm creates
+    streams with `mx.new_stream` (not thread-local) that only work from
+    the thread that created them.
+    """
+    return _run_on_worker(_mlx_load_impl, model_id)
+
+
+def _mlx_load_impl(model_id: str) -> tuple[str, Any, Any]:
+    """Cached load of a local MLX model. Always runs on the worker thread
+    via _run_on_worker.
 
     Two-phase loader:
 
@@ -324,7 +427,11 @@ def complete_local(
     model_id: str,
     max_tokens: int = 400,
 ) -> str:
-    """Run a single system+user completion via mlx-lm. Returns text only.
+    """Run a single system+user completion via mlx-lm or mlx-vlm.
+
+    Dispatches through the MLX worker thread so mlx-vlm's non-thread-
+    local generation_stream keeps working across viewer request threads.
+    See _worker_loop for the rationale.
 
     Reasoning-tuned models (Qwen3, DeepSeek-R1, QwQ, R1 distills) emit a
     scratchpad before the real answer. The industry-standard convention
@@ -347,7 +454,18 @@ def complete_local(
     models used text-only) via the _mlx_load backend tag. The same
     REASONING_DIRECTIVE contract applies to both.
     """
-    backend, model, handle = _mlx_load(model_id)
+    return _run_on_worker(
+        _complete_local_impl,
+        system=system, user=user, model_id=model_id, max_tokens=max_tokens,
+    )
+
+
+def _complete_local_impl(*, system: str, user: str, model_id: str,
+                         max_tokens: int) -> str:
+    """The actual body of complete_local — always runs on the worker
+    thread via _run_on_worker. Calling this directly from a handler
+    thread is what caused the 'no Stream in current thread' bug."""
+    backend, model, handle = _mlx_load_impl(model_id)
     if backend == "mlx_vlm":
         return _complete_local_vlm(model, handle, system, user, max_tokens)
     return _complete_local_lm(model, handle, system, user, max_tokens)
