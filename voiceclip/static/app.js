@@ -1250,6 +1250,10 @@
         el("div", {class:"empty"}, "Could not load settings.")
       );
     }
+    // Models list is best-effort and slower (it scans the filesystem) —
+    // fetch independently so a slow scan doesn't delay the rest of the
+    // settings UI.
+    loadModels();
   }
 
   function renderSettings(data) {
@@ -1453,6 +1457,139 @@
         el("div", null, k),
         el("div", {class:"sys-val"}, String(v || "")),
       ]));
+    }
+  }
+
+  // ---------- Model cache management ----------
+  //
+  // Shows every cached HuggingFace model with size, last-used date, and
+  // a Delete button. Destructive but reversible — HF redownloads on the
+  // next use if the model is still configured.
+
+  async function loadModels() {
+    const body = document.getElementById("settings_models_body");
+    body.innerHTML = "";
+    body.appendChild(el("div", {class:"empty", style:"padding:16px"}, "Scanning cache…"));
+    try {
+      const r = await fetch("/api/models");
+      const data = await r.json();
+      renderModels(data);
+    } catch(e) {
+      body.innerHTML = "";
+      body.appendChild(el("div", {class:"empty", style:"padding:16px"},
+        "Could not list cached models."));
+    }
+  }
+
+  function renderModels(data) {
+    const body = document.getElementById("settings_models_body");
+    body.innerHTML = "";
+
+    if (data.error) {
+      body.appendChild(el("div", {class:"models-error"},
+        `Could not scan cache: ${data.error}`));
+      return;
+    }
+    const models = data.models || [];
+    if (!models.length) {
+      body.appendChild(el("div", {class:"empty", style:"padding:16px"},
+        "No cached models. Pick a local provider in Summaries / Research / " +
+        "Patterns and they'll download on first use."));
+      return;
+    }
+
+    // Header with total size
+    body.appendChild(el("div", {class:"models-header"}, [
+      el("span", null, `${models.length} model${models.length === 1 ? "" : "s"} on disk`),
+      el("span", {class:"models-total"},
+        `${data.total_size_gb.toFixed(1)} GB total`),
+    ]));
+
+    for (const m of models) {
+      body.appendChild(renderModelRow(m));
+    }
+  }
+
+  function renderModelRow(model) {
+    const row = el("div", {class:"model-row"});
+    row.dataset.repoId = model.repo_id;
+
+    const title = el("div", {class:"model-title"}, [
+      el("span", {class:"model-id"}, model.repo_id),
+      model.in_use_for
+        ? el("span", {class:"model-badge"}, `in use · ${model.in_use_for}`)
+        : null,
+    ]);
+
+    const meta = el("div", {class:"model-meta"},
+      `${model.size_on_disk_str} · ${model.last_accessed_str} · ` +
+      `${model.nb_files} file${model.nb_files === 1 ? "" : "s"}`);
+
+    const deleteBtn = el("button", {
+      class: "model-delete",
+      onclick: ev => handleModelDelete(ev.target, row, model),
+    }, "Delete");
+
+    row.appendChild(title);
+    row.appendChild(meta);
+    row.appendChild(deleteBtn);
+    return row;
+  }
+
+  // Two-click confirm: first click arms the button with a warning that
+  // names the model + freed size; second click within 4s commits. Dictation
+  // model comes back from the server with a hard refusal, so no arming
+  // needed — we surface the 409 as an inline error.
+  function handleModelDelete(btn, row, model) {
+    if (btn.dataset.armed === "1") {
+      btn.dataset.armed = "";
+      deleteModel(btn, row, model);
+      return;
+    }
+    btn.dataset.armed = "1";
+    const prev = btn.textContent;
+    const warning = model.in_use_for
+      ? `Delete ${model.size_on_disk_str}? (${model.in_use_for} will re-download)`
+      : `Delete ${model.size_on_disk_str}?`;
+    btn.textContent = warning;
+    btn.classList.add("armed");
+    setTimeout(() => {
+      if (btn.dataset.armed === "1") {
+        btn.dataset.armed = "";
+        btn.textContent = prev;
+        btn.classList.remove("armed");
+      }
+    }, 4000);
+  }
+
+  async function deleteModel(btn, row, model) {
+    btn.disabled = true;
+    btn.textContent = "Deleting…";
+    btn.classList.remove("armed");
+    try {
+      const r = await fetch("/api/models/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({repo_id: model.repo_id}),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        btn.disabled = false;
+        btn.textContent = "Delete";
+        // Surface a precise error inline so the user understands why
+        // (e.g. "this is the dictation model currently in use").
+        const err = el("div", {class:"model-error"}, data.error || "Delete failed");
+        row.appendChild(err);
+        setTimeout(() => err.remove(), 6000);
+        return;
+      }
+      // Success — fade the row out, then refresh the whole list so the
+      // header total updates too.
+      row.classList.add("removing");
+      setTimeout(() => loadModels(), 360);
+    } catch(e) {
+      btn.disabled = false;
+      btn.textContent = "Delete";
     }
   }
 

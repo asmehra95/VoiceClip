@@ -326,3 +326,144 @@ class TestResearchLocalProvider:
         assert code == 200
         after = _get(server + "/api/settings")
         assert after["values"]["research.local_model"] == "mlx-community/Test-4bit"
+
+
+class TestModelsEndpoints:
+    """GET /api/models lists cached HF models; POST /api/models/delete
+    removes one. Both paths stub huggingface_hub.scan_cache_dir so tests
+    don't depend on what's in the user's actual cache."""
+
+    def _stub_scan_cache_dir(self, monkeypatch, repos):
+        """Install a fake scan_cache_dir that returns the given repo stubs."""
+        import sys
+        import types
+
+        class FakeRevision:
+            def __init__(self, commit_hash, size, size_str):
+                self.commit_hash = commit_hash
+                self.size_on_disk = size
+                self.size_on_disk_str = size_str
+
+        class FakeRepo:
+            def __init__(self, repo_id, size, size_str, last, last_str,
+                         nb_files, repo_type="model"):
+                self.repo_id = repo_id
+                self.repo_type = repo_type
+                self.size_on_disk = size
+                self.size_on_disk_str = size_str
+                self.last_accessed = last
+                self.last_accessed_str = last_str
+                self.nb_files = nb_files
+                # Single revision per repo is the typical shape
+                self.revisions = [
+                    FakeRevision(f"hash_{repo_id}", size, size_str)
+                ]
+
+        fake_repos = [FakeRepo(**r) for r in repos]
+
+        class FakeInfo:
+            size_on_disk = sum(r["size"] for r in repos)
+            def __init__(self): self.repos = fake_repos
+            def delete_revisions(self, *hashes):
+                # Return an object with .expected_freed_size and .execute()
+                class Strategy:
+                    expected_freed_size = sum(
+                        r.size_on_disk for r in fake_repos
+                        if any(f"hash_{r.repo_id}" in hashes for _ in [0])
+                    )
+                    def execute(self_): return None
+                return Strategy()
+
+        def fake_scan():
+            return FakeInfo()
+
+        # Both the viewer module's usage sites import lazily
+        import huggingface_hub
+        monkeypatch.setattr(huggingface_hub, "scan_cache_dir", fake_scan,
+                            raising=False)
+
+    def test_list_models_happy_path(self, server, monkeypatch):
+        self._stub_scan_cache_dir(monkeypatch, [
+            {"repo_id": "mlx-community/Whisper-Small", "size": 500_000_000,
+             "size_str": "500M", "last": 1000.0, "last_str": "today",
+             "nb_files": 3},
+            {"repo_id": "mlx-community/Qwen-4bit", "size": 4_000_000_000,
+             "size_str": "4G", "last": 900.0, "last_str": "2 days ago",
+             "nb_files": 5},
+        ])
+        data = _get(server + "/api/models")
+        assert data["error"] is None
+        ids = [m["repo_id"] for m in data["models"]]
+        assert "mlx-community/Whisper-Small" in ids
+        assert "mlx-community/Qwen-4bit" in ids
+        # Sorted by size desc — Qwen (4G) should be first
+        assert data["models"][0]["repo_id"] == "mlx-community/Qwen-4bit"
+
+    def test_list_models_flags_in_use(self, server, monkeypatch):
+        self._stub_scan_cache_dir(monkeypatch, [
+            {"repo_id": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+             "size": 4_000_000_000, "size_str": "4G",
+             "last": 1.0, "last_str": "now", "nb_files": 5},
+        ])
+        # Default config points summaries at Qwen2.5-7B-Instruct-4bit when
+        # provider is local. Force that state.
+        from voiceclip import config as cfg
+        monkeypatch.setattr(cfg, "SUMMARIES_PROVIDER", "local")
+        monkeypatch.setattr(cfg, "SUMMARIES_LOCAL_MODEL",
+                            "mlx-community/Qwen2.5-7B-Instruct-4bit")
+
+        data = _get(server + "/api/models")
+        assert data["models"][0]["in_use_for"] == "summaries"
+
+    def test_list_models_scan_failure_returns_error(self, server, monkeypatch):
+        import huggingface_hub
+        def boom():
+            raise RuntimeError("fake scan failure")
+        monkeypatch.setattr(huggingface_hub, "scan_cache_dir", boom,
+                            raising=False)
+        data = _get(server + "/api/models")
+        assert data["error"] is not None
+        assert "fake scan failure" in data["error"]
+        assert data["models"] == []
+
+    def test_delete_model_happy_path(self, server, monkeypatch):
+        self._stub_scan_cache_dir(monkeypatch, [
+            {"repo_id": "mlx-community/Something-4bit",
+             "size": 2_000_000_000, "size_str": "2G",
+             "last": 100.0, "last_str": "6 hours ago", "nb_files": 4},
+        ])
+        code, r = _post(f"{server}/api/models/delete",
+                        {"repo_id": "mlx-community/Something-4bit"})
+        assert code == 200
+        assert r["repo_id"] == "mlx-community/Something-4bit"
+
+    def test_delete_refuses_dictation_model(self, server, monkeypatch):
+        """The currently-loaded Whisper model cannot be deleted — refusal
+        must come with status 409 and an actionable message."""
+        from voiceclip import config as cfg
+        # get_model_repo reads MODEL + ENGLISH_ONLY. Default is the turbo
+        # model; grab that and feed it to our stub.
+        from voiceclip.config import get_model_repo
+        active_repo, _ = get_model_repo()
+        self._stub_scan_cache_dir(monkeypatch, [
+            {"repo_id": active_repo, "size": 1_500_000_000,
+             "size_str": "1.5G", "last": 0.0, "last_str": "just now",
+             "nb_files": 10},
+        ])
+        code, r = _post(f"{server}/api/models/delete", {"repo_id": active_repo})
+        assert code == 409
+        assert "dictation model currently in use" in r["error"]
+
+    def test_delete_rejects_missing_repo(self, server, monkeypatch):
+        self._stub_scan_cache_dir(monkeypatch, [])
+        code, r = _post(f"{server}/api/models/delete",
+                        {"repo_id": "nonexistent/model"})
+        assert code == 404
+
+    def test_delete_rejects_empty_repo_id(self, server):
+        code, r = _post(f"{server}/api/models/delete", {"repo_id": ""})
+        assert code == 400
+
+    def test_delete_rejects_wrong_type(self, server):
+        code, r = _post(f"{server}/api/models/delete", {"repo_id": 42})
+        assert code == 400
