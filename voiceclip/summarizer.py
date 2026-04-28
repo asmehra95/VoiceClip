@@ -74,9 +74,15 @@ def _run(provider: str, system: str, user: str, model_id: str) -> str:
         # Local models get the reasoning directive appended so Qwen3 /
         # DeepSeek-R1 / etc. route their scratchpad into <think> tags we
         # strip in llm_provider.complete_local.
+        #
+        # Token budget is generous (3000) because reasoning models spend
+        # most of their output inside <think>. After stripping, only the
+        # tokens after </think> become the user-visible summary, so we
+        # need headroom for both. Non-reasoning local models just ignore
+        # the extra budget and stop at their natural end.
         system = system + "\n\n" + llm_provider.REASONING_DIRECTIVE
         return llm_provider.complete_local(
-            system=system, user=user, model_id=model_id, max_tokens=400,
+            system=system, user=user, model_id=model_id, max_tokens=3000,
         )
     if provider == "openai":
         return llm_provider.complete_openai(

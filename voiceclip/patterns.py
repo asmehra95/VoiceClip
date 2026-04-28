@@ -149,9 +149,11 @@ def _run(provider: str, system: str, user: str, model_id: str) -> str:
         # strip in complete_local. For patterns the final answer is JSON,
         # so the <think> channel keeps the JSON clean. _parse_json_safely
         # also tolerates prose prefixes as a second line of defense.
+        # 3000-token budget mirrors summaries/research so reasoning
+        # models have room for a long scratchpad plus the full JSON.
         system = system + "\n\n" + llm_provider.REASONING_DIRECTIVE
         return llm_provider.complete_local(
-            system=system, user=user, model_id=model_id, max_tokens=900,
+            system=system, user=user, model_id=model_id, max_tokens=3000,
         )
     if provider == "openai":
         return llm_provider.complete_openai(

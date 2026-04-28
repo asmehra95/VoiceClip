@@ -432,6 +432,25 @@ def _extract_answer(text: str) -> str:
     # Case 1: closed blocks — strip every one, keep the remainder
     cleaned, n_subs = _REASONING_BLOCK_RE.subn("", text)
     if n_subs > 0:
+        # Warn if the answer channel looks truncated mid-thought. Signals:
+        #   - empty after stripping (model used the whole budget on
+        #     reasoning and never wrote an answer)
+        #   - very short with no terminal punctuation (likely mid-sentence
+        #     cutoff because max_tokens ran out after </think>)
+        stripped = cleaned.strip()
+        if not stripped:
+            log.warning(
+                "Local model answer channel is empty after stripping "
+                "<think> — the reasoning block ate the entire max_tokens "
+                "budget. Raise the caller's max_tokens."
+            )
+        elif len(stripped) < 40 and stripped[-1] not in ".!?\"')]}»”":
+            log.warning(
+                "Local model answer channel may be truncated mid-sentence "
+                "(%d chars, ends with %r). Raise max_tokens if summaries "
+                "keep coming back short.",
+                len(stripped), stripped[-1],
+            )
         return cleaned
 
     # Case 2: unclosed opener — keep only the prefix before it

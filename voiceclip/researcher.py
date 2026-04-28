@@ -72,12 +72,15 @@ def _run(provider: str, topic: str, model_id: str) -> tuple[str, list, bool]:
         # already handles reasoning-model scratchpad stripping; we just
         # need to append the reasoning-channel directive so the model
         # routes its thinking through <think> tags we can strip.
+        # 3000-token budget leaves room for a long scratchpad plus the
+        # visible brief — briefs routinely run 400-600 tokens, and
+        # reasoning models can easily spend 1000+ tokens thinking.
         system = _SYSTEM_PROMPT_LOCAL + "\n\n" + llm_provider.REASONING_DIRECTIVE
         text = llm_provider.complete_local(
             system=system,
             user=user_content,
             model_id=model_id,
-            max_tokens=800,
+            max_tokens=3000,
         )
         return text, [], False
     if provider == "openai":
