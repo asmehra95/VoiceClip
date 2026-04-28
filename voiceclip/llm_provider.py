@@ -33,27 +33,172 @@ _mlx_cache: dict[str, tuple[Any, Any]] = {}
 _mlx_cache_lock = threading.Lock()
 
 
-def _mlx_load(model_id: str):
-    """Cached mlx-lm load. Returns (model, tokenizer)."""
+# Model types that go straight to mlx-vlm without trying mlx-lm first.
+# Covers Gemma 4 (vision+audio checkpoint even when model_type ends in
+# _text — the weight files carry the full tower), and any model whose
+# type contains "vl" (Qwen-VL, LLaVA-VL variants) or "vision".
+#
+# The list is kept small and exact rather than a broad regex so we only
+# skip the fast mlx-lm path for checkpoints that we KNOW will fail in it.
+# Unknown model types fall through to the try-mlx-lm-first logic.
+_MLX_VLM_PREFERRED_TYPES: frozenset[str] = frozenset({
+    "gemma4",
+    "gemma4_text",
+    "gemma3n",   # Gemma 3n is also multimodal; full checkpoint fails in mlx-lm
+})
+
+
+def _preflight_model_type(model_id: str) -> str | None:
+    """Peek at HuggingFace's config.json to learn the model_type field.
+
+    Cached inside HF's own disk cache, so warm invocations are a single
+    file read (~5ms). Cold invocations download a ~1KB file.
+
+    Returns the model_type string (e.g. "gemma4_text", "qwen2_vl",
+    "qwen2") or None on any failure. Failure is fine — the caller just
+    skips the preflight shortcut and tries mlx-lm first.
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+        import json as _json
+        path = hf_hub_download(model_id, "config.json")
+        with open(path, "r") as f:
+            cfg = _json.loads(f.read())
+        return cfg.get("model_type")
+    except Exception as e:
+        log.debug("config.json preflight failed for %s: %s", model_id, e)
+        return None
+
+
+# In-process cache of loaded models.
+#
+# Each entry is (backend, model, handle) where backend is one of:
+#   "mlx_lm"  — handle is a tokenizer
+#   "mlx_vlm" — handle is a processor (vlm-specific wrapper)
+#
+# Storing the backend tag lets complete_local() dispatch without re-probing.
+# Two concurrent requests with the same model_id would double-load ~4-8GB
+# into memory without the lock, so we serialize misses.
+
+_mlx_cache: dict[str, tuple[str, Any, Any]] = {}
+_mlx_cache_lock = threading.Lock()
+
+
+def _mlx_load(model_id: str) -> tuple[str, Any, Any]:
+    """Cached load of a local MLX model.
+
+    Two-phase loader:
+
+    1. Cheap preflight reads config.json and checks model_type. For known
+       multimodal types (gemma4, gemma3n, *_vl) we go straight to mlx-vlm.
+       This avoids wasting time on an mlx-lm load that would inevitably
+       fail with "parameters not in model".
+
+    2. Otherwise try mlx-lm first (the 95% case for text-only LLMs).
+       On a ValueError with "parameters not in model", fall back to
+       mlx-vlm — this catches multimodal checkpoints whose model_type
+       we don't know about yet. Other ValueErrors get classified into
+       readable hints.
+
+    Returns (backend, model, handle) where handle is a tokenizer for
+    mlx-lm or a processor for mlx-vlm. Callers dispatch on backend.
+    """
     # Fast path: cache hit without holding the lock
     cached = _mlx_cache.get(model_id)
     if cached is not None:
         return cached
-    try:
-        from mlx_lm import load
-    except ImportError:
-        raise RuntimeError(
-            "mlx-lm is not installed. Install it with:\n"
-            "    ~/.voiceclip/.venv/bin/pip install mlx-lm"
-        )
+
     with _mlx_cache_lock:
         # Re-check under the lock — another thread may have loaded it
         cached = _mlx_cache.get(model_id)
         if cached is not None:
             return cached
+
         log.info("Loading local model: %s (first use — may download)", model_id)
-        _mlx_cache[model_id] = load(model_id)
-        return _mlx_cache[model_id]
+
+        # Phase 1: preflight — is this a known multimodal type?
+        model_type = _preflight_model_type(model_id) or ""
+        prefer_vlm = (
+            model_type in _MLX_VLM_PREFERRED_TYPES
+            or model_type.endswith("_vl")
+            or "vision" in model_type
+        )
+
+        if prefer_vlm:
+            log.info(
+                "%s has model_type=%r; loading via mlx-vlm directly",
+                model_id, model_type,
+            )
+            return _load_via_vlm(model_id)
+
+        # Phase 2: try mlx-lm
+        try:
+            from mlx_lm import load as lm_load
+        except ImportError:
+            raise RuntimeError(
+                "mlx-lm is not installed. Install it with:\n"
+                "    ~/.voiceclip/.venv/bin/pip install mlx-lm"
+            )
+
+        try:
+            model, tokenizer = lm_load(model_id)
+            _mlx_cache[model_id] = ("mlx_lm", model, tokenizer)
+            return _mlx_cache[model_id]
+        except ValueError as e:
+            if "parameters not in model" in str(e).lower():
+                log.info(
+                    "%s didn't load with mlx-lm (multimodal checkpoint); "
+                    "falling back to mlx-vlm", model_id,
+                )
+                return _load_via_vlm(model_id)
+            raise _classify_mlx_load_error(model_id, e) from e
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not load local model '{model_id}': "
+                f"{type(e).__name__}: {str(e)[:300]}"
+            ) from e
+
+
+def _load_via_vlm(model_id: str) -> tuple[str, Any, Any]:
+    """Load a model through mlx-vlm. Must only be called while holding
+    _mlx_cache_lock. Installs the cache entry before returning."""
+    try:
+        from mlx_vlm import load as vlm_load
+    except ImportError:
+        raise RuntimeError(
+            f"'{model_id}' is a multimodal model and needs mlx-vlm. "
+            "Install it with:\n"
+            "    ~/.voiceclip/.venv/bin/pip install mlx-vlm\n"
+            "Then restart voiceclip view."
+        )
+    try:
+        model, processor = vlm_load(model_id)
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not load '{model_id}' with mlx-vlm: "
+            f"{type(e).__name__}: {str(e)[:300]}"
+        ) from e
+    _mlx_cache[model_id] = ("mlx_vlm", model, processor)
+    return _mlx_cache[model_id]
+
+
+def _classify_mlx_load_error(model_id: str, err: Exception) -> RuntimeError:
+    """Map mlx-lm weight-loading errors to readable hints.
+
+    Called only on ValueErrors that weren't the multimodal signature
+    (which has its own fallback path).
+    """
+    msg = str(err)
+    low = msg.lower()
+    if "missing parameters" in low or ("not found" in low and "weight" in low):
+        return RuntimeError(
+            f"'{model_id}' appears to be missing weight files. The download "
+            "may have been interrupted. Try clearing it from the "
+            "\"Downloaded models\" panel in Settings and loading again."
+        )
+    return RuntimeError(
+        f"Could not load local model '{model_id}': {msg[:400]}"
+    )
 
 
 def reset_mlx_cache():
@@ -91,10 +236,22 @@ def complete_local(
     We deliberately do NOT send `/no_think` or `enable_thinking=False`.
     The whole point of a reasoning model is that it thinks — we just
     route the scratchpad into a channel we can strip.
+
+    Supports both mlx-lm (text-only LLMs) and mlx-vlm (multimodal
+    models used text-only) via the _mlx_load backend tag. The same
+    REASONING_DIRECTIVE contract applies to both.
     """
+    backend, model, handle = _mlx_load(model_id)
+    if backend == "mlx_vlm":
+        return _complete_local_vlm(model, handle, system, user, max_tokens)
+    return _complete_local_lm(model, handle, system, user, max_tokens)
+
+
+def _complete_local_lm(model, tokenizer, system: str, user: str, max_tokens: int) -> str:
+    """mlx-lm generate path. Tokenizer produces the chat template;
+    generate() returns a plain string."""
     from mlx_lm import generate
 
-    model, tokenizer = _mlx_load(model_id)
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -109,6 +266,43 @@ def complete_local(
     if out.startswith(prompt):
         out = out[len(prompt):]
     return _extract_answer(out).strip()
+
+
+def _complete_local_vlm(model, processor, system: str, user: str, max_tokens: int) -> str:
+    """mlx-vlm generate path, used for multimodal models in text-only
+    mode. Processor handles the chat template via apply_chat_template;
+    generate() returns a GenerationResult object we unwrap via .text.
+
+    We pass num_images=0 and no image list — mlx-vlm then only runs the
+    language tower, skipping the vision/audio encoders entirely. The
+    vision weights sit in RAM unused but don't affect inference speed.
+    """
+    from mlx_vlm import generate
+    from mlx_vlm.prompt_utils import apply_chat_template
+
+    # mlx-vlm's apply_chat_template bakes the system prompt into the
+    # user turn when the processor doesn't have a system slot. Preserve
+    # the same structure we use for mlx-lm by concatenating — keeps
+    # REASONING_DIRECTIVE effective and the output shape identical.
+    combined = f"{system}\n\n{user}" if system else user
+    try:
+        prompt = apply_chat_template(
+            processor, model.config, combined, num_images=0,
+        )
+    except Exception:
+        prompt = combined
+
+    result = generate(
+        model, processor, prompt,
+        max_tokens=max_tokens, verbose=False,
+    )
+    # mlx-vlm returns a GenerationResult dataclass with .text; older
+    # versions returned a plain string. Handle both so we're resilient
+    # to library bumps.
+    text = getattr(result, "text", result) if result else ""
+    if isinstance(text, str) and text.startswith(prompt):
+        text = text[len(prompt):]
+    return _extract_answer(text).strip()
 
 
 # Shared directive appended to every local-model system prompt so reasoning

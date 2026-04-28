@@ -88,7 +88,7 @@ class TestMlxCache:
 
     def test_reset_clears_cache(self):
         # Prime the cache with a fake entry; reset should wipe it.
-        llm_provider._mlx_cache["fake-model"] = ("model-obj", "tok-obj")
+        llm_provider._mlx_cache["fake-model"] = ("mlx_lm", "model-obj", "tok-obj")
         llm_provider.reset_mlx_cache()
         assert llm_provider._mlx_cache == {}
 
@@ -96,9 +96,9 @@ class TestMlxCache:
         """If the cache already has an entry, _mlx_load must return it
         without touching the mlx_lm import — which may not even be
         installed."""
-        llm_provider._mlx_cache["cached-model"] = ("weights", "tokenizer")
+        llm_provider._mlx_cache["cached-model"] = ("mlx_lm", "weights", "tokenizer")
         # Should return the cached tuple verbatim, no import path taken
-        assert llm_provider._mlx_load("cached-model") == ("weights", "tokenizer")
+        assert llm_provider._mlx_load("cached-model") == ("mlx_lm", "weights", "tokenizer")
 
 
 class TestStripReasoning:
@@ -267,7 +267,7 @@ class TestCompleteLocalNoNoThink:
         def fake_generate(model, tokenizer, **kwargs):
             return kwargs.get("prompt", "PROMPT") + "some answer"
 
-        llm_provider._mlx_cache["test-model"] = ("model-obj", FakeTokenizer())
+        llm_provider._mlx_cache["test-model"] = ("mlx_lm", "model-obj", FakeTokenizer())
         # Stub mlx_lm.generate so the test runs without mlx-lm installed.
         import sys
         import types
@@ -283,3 +283,148 @@ class TestCompleteLocalNoNoThink:
         # The user message is exactly the user content — no /no_think suffix
         user_msg = next(m for m in captured["messages"] if m["role"] == "user")
         assert user_msg["content"] == "the user content"
+
+
+class TestMlxVlmBackend:
+    """The _mlx_load path must prefer mlx-vlm for known multimodal models
+    (Gemma 4, Gemma 3n, *_vl). Everything else tries mlx-lm first and only
+    falls back to mlx-vlm on the 'parameters not in model' signature."""
+
+    def _stub_mlx_lm(self, monkeypatch, behavior):
+        """Install a fake mlx_lm with a load() function that follows `behavior`.
+
+        behavior("model_id") should either return (model, tokenizer) or raise.
+        """
+        import sys, types
+        fake = types.ModuleType("mlx_lm")
+        fake.load = behavior
+        monkeypatch.setitem(sys.modules, "mlx_lm", fake)
+
+    def _stub_mlx_vlm(self, monkeypatch, behavior):
+        """Install a fake mlx_vlm with a load() function."""
+        import sys, types
+        fake = types.ModuleType("mlx_vlm")
+        fake.load = behavior
+        monkeypatch.setitem(sys.modules, "mlx_vlm", fake)
+
+    def _stub_preflight(self, monkeypatch, model_type: str | None):
+        """Force the config.json preflight to return a specific model_type
+        (or None to simulate preflight failure)."""
+        monkeypatch.setattr(llm_provider, "_preflight_model_type",
+                            lambda mid: model_type)
+
+    def test_gemma4_skips_mlx_lm_and_uses_vlm(self, monkeypatch):
+        """Known multimodal model type must go straight to mlx-vlm —
+        no wasted mlx-lm attempt, no download churn."""
+        lm_called = {"n": 0}
+        vlm_called = {"n": 0}
+
+        def lm_load(_):
+            lm_called["n"] += 1
+            return ("m", "t")
+
+        def vlm_load(_):
+            vlm_called["n"] += 1
+            return ("vlm-model", "processor")
+
+        self._stub_mlx_lm(monkeypatch, lm_load)
+        self._stub_mlx_vlm(monkeypatch, vlm_load)
+        self._stub_preflight(monkeypatch, "gemma4_text")
+
+        backend, model, handle = llm_provider._mlx_load(
+            "mlx-community/gemma-4-e4b-it-4bit")
+        assert backend == "mlx_vlm"
+        assert lm_called["n"] == 0
+        assert vlm_called["n"] == 1
+
+    def test_text_only_model_uses_mlx_lm(self, monkeypatch):
+        """The common case — Qwen2.5, Llama, etc. — must use mlx-lm
+        directly with no mlx-vlm involvement."""
+        vlm_called = {"n": 0}
+
+        def lm_load(_):
+            return ("lm-model", "tokenizer")
+
+        def vlm_load(_):
+            vlm_called["n"] += 1
+            return ("vlm-model", "processor")
+
+        self._stub_mlx_lm(monkeypatch, lm_load)
+        self._stub_mlx_vlm(monkeypatch, vlm_load)
+        self._stub_preflight(monkeypatch, "qwen2")
+
+        backend, model, handle = llm_provider._mlx_load(
+            "mlx-community/Qwen2.5-7B-Instruct-4bit")
+        assert backend == "mlx_lm"
+        assert vlm_called["n"] == 0
+
+    def test_fallback_on_parameters_not_in_model(self, monkeypatch):
+        """When mlx-lm raises the multimodal ValueError for a model the
+        preflight didn't flag, we still fall back to mlx-vlm."""
+        lm_called = {"n": 0}
+
+        def lm_load(_):
+            lm_called["n"] += 1
+            raise ValueError("Received 42 parameters not in model:\nweights...")
+
+        def vlm_load(_):
+            return ("vlm-model", "processor")
+
+        self._stub_mlx_lm(monkeypatch, lm_load)
+        self._stub_mlx_vlm(monkeypatch, vlm_load)
+        self._stub_preflight(monkeypatch, "unknown_type")
+
+        backend, model, handle = llm_provider._mlx_load("some/mystery-model")
+        assert backend == "mlx_vlm"
+        assert lm_called["n"] == 1
+
+    def test_non_multimodal_value_error_is_classified(self, monkeypatch):
+        """A ValueError that ISN'T the multimodal signature should NOT
+        trigger mlx-vlm fallback — it's a genuine load failure that
+        deserves a classified error message."""
+        vlm_called = {"n": 0}
+
+        def lm_load(_):
+            raise ValueError("missing parameters from weights file")
+
+        def vlm_load(_):
+            vlm_called["n"] += 1
+            return ("vlm-model", "processor")
+
+        self._stub_mlx_lm(monkeypatch, lm_load)
+        self._stub_mlx_vlm(monkeypatch, vlm_load)
+        self._stub_preflight(monkeypatch, "qwen2")
+
+        with pytest.raises(RuntimeError, match="missing weight files"):
+            llm_provider._mlx_load("broken/download")
+        assert vlm_called["n"] == 0
+
+    def test_cached_backend_is_reused(self, monkeypatch):
+        """Second call for the same model_id hits the cache without
+        touching either loader."""
+        lm_count = {"n": 0}
+
+        def lm_load(_):
+            lm_count["n"] += 1
+            return ("m", "t")
+
+        self._stub_mlx_lm(monkeypatch, lm_load)
+        self._stub_preflight(monkeypatch, "qwen2")
+
+        llm_provider._mlx_load("mlx/foo")
+        llm_provider._mlx_load("mlx/foo")
+        assert lm_count["n"] == 1
+
+    def test_vlm_missing_gives_actionable_error(self, monkeypatch):
+        """If a multimodal model is configured but mlx-vlm isn't installed,
+        the error should tell the user exactly how to install it."""
+        import sys
+        self._stub_mlx_lm(monkeypatch,
+                          lambda _: (_ for _ in ()).throw(
+                              ValueError("Received 10 parameters not in model")))
+        self._stub_preflight(monkeypatch, "qwen2")
+        # Ensure mlx_vlm import fails
+        monkeypatch.setitem(sys.modules, "mlx_vlm", None)
+
+        with pytest.raises(RuntimeError, match="mlx-vlm"):
+            llm_provider._mlx_load("gemma-4-test")

@@ -246,9 +246,23 @@ def _check_optional_providers(r: Report):
     local_in_use = (
         config.SUMMARIES_PROVIDER == "local"
         or config.PATTERNS_PROVIDER == "local"
+        or config.RESEARCH_PROVIDER == "local"
     )
     if local_in_use:
         _check_pkg("mlx-lm", "mlx_lm")
+        # mlx-vlm is only required when one of the configured local
+        # models is multimodal (Gemma 4, Qwen-VL, etc). We don't try to
+        # detect that here — it's only clear at load time. But if the
+        # package is present we can surface the version; if it isn't,
+        # just note that multimodal models will fail.
+        try:
+            import mlx_vlm
+            r.note("mlx-vlm installed",
+                   f"(for multimodal models: {getattr(mlx_vlm, '__version__', '?')})")
+        except ImportError:
+            r.note("mlx-vlm",
+                   "not installed — text-only LLMs work, "
+                   "multimodal models (Gemma 4, Qwen-VL) won't load")
     else:
         r.note("mlx-lm", "not needed (no local provider configured)")
 
