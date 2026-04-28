@@ -142,8 +142,13 @@ def _mlx_load(model_id: str) -> tuple[str, Any, Any]:
                 "    ~/.voiceclip/.venv/bin/pip install mlx-lm"
             )
 
+        # Wrap the load in a GPU stream — mlx-lm places quantized weights
+        # on the Metal device during load, which needs a stream attached
+        # to the current thread. Same reason we wrap generate().
+        import mlx.core as mx
         try:
-            model, tokenizer = lm_load(model_id)
+            with mx.stream(mx.gpu):
+                model, tokenizer = lm_load(model_id)
             _mlx_cache[model_id] = ("mlx_lm", model, tokenizer)
             return _mlx_cache[model_id]
         except ValueError as e:
@@ -199,7 +204,11 @@ def _mlx_load(model_id: str) -> tuple[str, Any, Any]:
 
 def _load_via_vlm(model_id: str) -> tuple[str, Any, Any]:
     """Load a model through mlx-vlm. Must only be called while holding
-    _mlx_cache_lock. Installs the cache entry before returning."""
+    _mlx_cache_lock. Installs the cache entry before returning.
+
+    Wrapped in a GPU stream so weight placement on the Metal device
+    succeeds regardless of which handler thread we're currently on.
+    """
     try:
         from mlx_vlm import load as vlm_load
     except ImportError:
@@ -209,8 +218,10 @@ def _load_via_vlm(model_id: str) -> tuple[str, Any, Any]:
             "    ~/.voiceclip/.venv/bin/pip install mlx-vlm\n"
             "Then restart voiceclip view."
         )
+    import mlx.core as mx
     try:
-        model, processor = vlm_load(model_id)
+        with mx.stream(mx.gpu):
+            model, processor = vlm_load(model_id)
     except Exception as e:
         raise RuntimeError(
             f"Could not load '{model_id}' with mlx-vlm: "
@@ -287,7 +298,15 @@ def complete_local(
 
 def _complete_local_lm(model, tokenizer, system: str, user: str, max_tokens: int) -> str:
     """mlx-lm generate path. Tokenizer produces the chat template;
-    generate() returns a plain string."""
+    generate() returns a plain string.
+
+    The `with mx.stream(mx.gpu)` wrapper ensures the current thread has
+    an attached Metal stream. The viewer uses ThreadingHTTPServer — each
+    HTTP request runs in a different thread, and MLX needs a stream on
+    whichever thread is about to run GPU ops. Missing stream manifests as
+    "There is no Stream(gpu, 0) in current thread".
+    """
+    import mlx.core as mx
     from mlx_lm import generate
 
     messages = [
@@ -300,7 +319,11 @@ def _complete_local_lm(model, tokenizer, system: str, user: str, max_tokens: int
         )
     except Exception:
         prompt = f"{system}\n\n{user}\n\n"
-    out = generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens, verbose=False)
+    with mx.stream(mx.gpu):
+        out = generate(
+            model, tokenizer, prompt=prompt,
+            max_tokens=max_tokens, verbose=False,
+        )
     if out.startswith(prompt):
         out = out[len(prompt):]
     return _extract_answer(out).strip()
@@ -314,7 +337,12 @@ def _complete_local_vlm(model, processor, system: str, user: str, max_tokens: in
     We pass num_images=0 and no image list — mlx-vlm then only runs the
     language tower, skipping the vision/audio encoders entirely. The
     vision weights sit in RAM unused but don't affect inference speed.
+
+    Wrapped in `with mx.stream(mx.gpu)` for the same reason as
+    _complete_local_lm — the viewer's per-request thread needs a Metal
+    stream attached before any GPU op runs.
     """
+    import mlx.core as mx
     from mlx_vlm import generate
     from mlx_vlm.prompt_utils import apply_chat_template
 
@@ -330,10 +358,11 @@ def _complete_local_vlm(model, processor, system: str, user: str, max_tokens: in
     except Exception:
         prompt = combined
 
-    result = generate(
-        model, processor, prompt,
-        max_tokens=max_tokens, verbose=False,
-    )
+    with mx.stream(mx.gpu):
+        result = generate(
+            model, processor, prompt,
+            max_tokens=max_tokens, verbose=False,
+        )
     # mlx-vlm returns a GenerationResult dataclass with .text; older
     # versions returned a plain string. Handle both so we're resilient
     # to library bumps.
