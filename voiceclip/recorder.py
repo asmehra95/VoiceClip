@@ -124,7 +124,13 @@ def _recorder_loop(conn):
     while True:
         try:
             raw_msg = conn.recv()
-        except (EOFError, OSError):
+        except (EOFError, OSError, KeyboardInterrupt):
+            # Ctrl+C on macOS (and the Linux default) delivers SIGINT to the
+            # whole foreground process group, so the child gets interrupted
+            # mid-recv() before the parent can send QUIT. Treat KeyboardInterrupt
+            # the same as "parent is going away" — fall through to the stream
+            # teardown below. Without this, multiprocessing dumps a full
+            # traceback every time the user hits Ctrl+C.
             break
 
         if isinstance(raw_msg, RecorderCmd):
