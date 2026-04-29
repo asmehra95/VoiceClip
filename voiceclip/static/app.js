@@ -1270,7 +1270,17 @@
 
   // ---------- Search (journal tab, spans all days) ----------
 
-  let _searchSeq = 0;
+  // Debounce + stale-response handling via AbortController — the browser
+  // primitive for "cancel this fetch because a newer one just started."
+  // Holding a reference to the most-recent controller lets every new
+  // keystroke abort in-flight requests. The AbortError arrives in the
+  // fetch's rejected-promise path and we silently swallow it, so only
+  // the latest search's response ever hits renderSearchResults.
+
+  /** @type {AbortController | null} */
+  let _searchAbort = null;
+  /** @type {number | undefined} */
+  let _searchDebounceTimer;
   const searchInput = $input("search_input");
   const searchClear = $id("search_clear");
 
@@ -1278,6 +1288,7 @@
   searchClear.addEventListener("click", () => {
     searchInput.value = "";
     searchClear.style.display = "none";
+    _searchAbort?.abort();
     load(state.date);
   });
 
@@ -1294,26 +1305,36 @@
   function debounceSearch() {
     const term = searchInput.value.trim();
     searchClear.style.display = term ? "" : "none";
-    const mySeq = ++_searchSeq;
-    // setTimeout id stashed on the function object for the same reason as
-    // the inp._t idiom — debounce state has to live somewhere stable.
-    /** @type {any} */
-    const ds = debounceSearch;
-    clearTimeout(ds._t);
-    ds._t = setTimeout(() => {
-      if (mySeq !== _searchSeq) return;   // superseded
-      if (!term) { load(state.date); return; }
-      runSearch(term, mySeq);
+    clearTimeout(_searchDebounceTimer);
+    _searchDebounceTimer = setTimeout(() => {
+      if (!term) {
+        _searchAbort?.abort();
+        load(state.date);
+        return;
+      }
+      runSearch(term);
     }, 180);
   }
 
-  async function runSearch(term, seq) {
+  async function runSearch(term) {
+    // Any in-flight search is now stale — cancel it so its response
+    // never renders over this newer one.
+    _searchAbort?.abort();
+    _searchAbort = new AbortController();
+    const signal = _searchAbort.signal;
     try {
-      const r = await fetch(`/api/search?q=${encodeURIComponent(term)}`);
+      const r = await fetch(
+        `/api/search?q=${encodeURIComponent(term)}`,
+        { signal },
+      );
       const data = await r.json();
-      if (seq !== _searchSeq) return;  // a newer search started; discard
+      if (signal.aborted) return;  // superseded while we awaited
       renderSearchResults(term, data.entries || []);
-    } catch(e) { /* best effort */ }
+    } catch (e) {
+      // AbortError is expected when a newer search supersedes this one.
+      // Other errors are silent best-effort — search is non-critical, and
+      // an intermittent failure doesn't block anything the user can't retry.
+    }
   }
 
   function renderSearchResults(term, entries) {
