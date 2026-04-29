@@ -1228,13 +1228,25 @@
       slot.appendChild(sug);
     }
 
-    // Footer with window stats
+    // Footer with window stats.
+    // cached_summaries / cached_timelines show how much pre-digested
+    // input the model actually had. "0/7" here is a useful signal that
+    // the patterns output is running on raw reflections + app counts
+    // alone, and the user might want to generate daily summaries or
+    // timelines for better longitudinal synthesis next run.
     if (stats.transcription_count != null || stats.reflection_count != null) {
-      slot.appendChild(el("div", {class:"queue-hint"},
-        `Window: ${stats.start_date} to ${stats.end_date} · ` +
-        `${stats.transcription_count || 0} transcriptions · ` +
-        `${stats.reflection_count || 0} reflections · ` +
-        `${p.provider || ""} ${shortModel(p.model || "")}`));
+      const wd = stats.window_days;
+      const parts = [
+        `Window: ${stats.start_date} to ${stats.end_date}`,
+        `${stats.transcription_count || 0} transcriptions`,
+        `${stats.reflection_count || 0} reflections`,
+      ];
+      if (wd) {
+        parts.push(`${stats.cached_summaries || 0}/${wd} daily summaries`);
+        parts.push(`${stats.cached_timelines || 0}/${wd} daily timelines`);
+      }
+      parts.push(`${p.provider || ""} ${shortModel(p.model || "")}`);
+      slot.appendChild(el("div", {class:"queue-hint"}, parts.join(" · ")));
     }
     // Regen button
     slot.appendChild(el("button", {class:"queue-btn",

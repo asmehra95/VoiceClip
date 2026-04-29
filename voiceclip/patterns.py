@@ -51,6 +51,7 @@ You're reading someone's voice-dictation log over the past several days. Produce
 Rules that matter:
 - Every `quote` and `grounding_quote` must be a direct substring of a reflection in the log. If you can't find one, omit that theme/suggestion.
 - Only suggest topics the person explicitly showed interest in learning or kept asking about. If nothing qualifies, return `"suggestions": []` — an empty list is correct, invented suggestions are wrong.
+- Daily timelines (when present) show when within each day things happened. Use them to notice rhythms across days — recurring morning topics, late-night reflections, afternoon slumps — that flat summaries can't reveal.
 - Maximum 4 themes, 3 suggestions.
 - Return strict JSON. No prose, no code fences.
 
@@ -66,12 +67,22 @@ def _build_user_message(window_days: int) -> tuple[str, dict]:
     start_str = start.strftime("%Y-%m-%d")
 
     reflections = history.entries_for_window(start_str, end_str, kind="reflection")
+    # Read both cached layers per day: summaries (descriptive/reflective
+    # paragraph) and timelines (chronological morning/afternoon/evening
+    # breakdown). Timelines carry intra-day structure — "every day has an
+    # afternoon-slump" — that flat summaries can't surface. If a day has
+    # neither cached, it contributes nothing to this prompt section, and
+    # the model falls back to reflections + app counts for that day.
     daily_summaries = []
+    daily_timelines = []
     for i in range(window_days):
         d = (end - timedelta(days=i)).strftime("%Y-%m-%d")
         s = history.get_day_summary(d)
         if s and s.get("summary"):
             daily_summaries.append({"date": d, "summary": s["summary"]})
+        t = history.get_day_timeline(d)
+        if t and t.get("timeline"):
+            daily_timelines.append({"date": d, "timeline": t["timeline"]})
     apps = history.app_distribution_for_window(start_str, end_str, top_n=8)
     all_entries = history.entries_for_window(start_str, end_str)
 
@@ -103,6 +114,21 @@ def _build_user_message(window_days: int) -> tuple[str, dict]:
     else:
         lines.append("  (no cached summaries)")
     lines.append("")
+    # Chronological layer — appears AFTER summaries so the model reads
+    # the "what" before the "when". Format deliberately compact: each
+    # timeline is already short (4 paragraphs max from generate_timeline),
+    # but we indent under the date so multi-line timelines stay grouped.
+    lines.append("Daily timelines (chronological walkthroughs, newest first):")
+    if daily_timelines:
+        for t in daily_timelines:
+            lines.append(f"  [{t['date']}]")
+            for tl_line in t["timeline"].splitlines():
+                stripped = tl_line.strip()
+                if stripped:
+                    lines.append(f"    {stripped}")
+    else:
+        lines.append("  (no cached timelines)")
+    lines.append("")
     lines.append("Reflections (verbatim):")
     if reflections:
         for r in reflections:
@@ -122,10 +148,12 @@ def _build_user_message(window_days: int) -> tuple[str, dict]:
     stats = {
         "start_date": start_str,
         "end_date": end.strftime("%Y-%m-%d"),
+        "window_days": window_days,
         "transcription_count": n_transcriptions,
         "reflection_count": n_reflections,
         "apps": apps,
         "cached_summaries": len(daily_summaries),
+        "cached_timelines": len(daily_timelines),
         # Used as a cache key signal: when either count changes, we regenerate
         "total_count": n_transcriptions + n_reflections,
     }

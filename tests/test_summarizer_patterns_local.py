@@ -221,3 +221,82 @@ class TestTimelineGeneration:
         result = generate_timeline("2025-06-15", force=False)
         assert call_count["n"] == 1
         assert result["timeline"] == "cached body"
+
+
+class TestPatternsUsesCachedLayers:
+    """Patterns must read both day_summaries AND day_timelines from the
+    DB cache and fold them into the prompt. Missing days are silently
+    skipped (model falls back to reflections + app counts)."""
+
+    def _capture_and_run(self, monkeypatch):
+        """Stub complete_local to capture the user prompt + return a
+        minimal valid JSON response, then run patterns. Returns the
+        captured (system, user) pair + the patterns result."""
+        captured = {}
+
+        def fake_local(*, system, user, model_id, max_tokens=400):
+            captured["system"] = system
+            captured["user"] = user
+            return '{"occupied_with": "x", "themes": [], "suggestions": []}'
+
+        monkeypatch.setattr(llm_provider, "complete_local", fake_local)
+        monkeypatch.setattr(config, "PATTERNS_PROVIDER", "local")
+        monkeypatch.setattr(config, "PATTERNS_LOCAL_MODEL",
+                            "mlx-community/Stub-4bit")
+        patterns.reset_cache()
+
+        # At least one reflection so patterns actually invokes the model
+        history.save("raw", "a reflection that matters", 1.0,
+                     kind="reflection", app_name="Notes")
+
+        result = patterns.generate_patterns(window_days=7, force=True)
+        return captured, result
+
+    def test_timelines_section_present_when_cached(self, monkeypatch):
+        # Seed a cached timeline for today. Uses the same upsert path the
+        # summarizer uses in production.
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        history.save_day_timeline(
+            today, "Morning: you started with email. Afternoon: deep work.",
+            provider="local", model="stub", entry_count=5,
+        )
+
+        captured, result = self._capture_and_run(monkeypatch)
+
+        assert "Daily timelines" in captured["user"]
+        assert f"[{today}]" in captured["user"]
+        assert "Morning:" in captured["user"]
+        # Stats surface the coverage the UI needs
+        assert result["stats"]["cached_timelines"] == 1
+        assert result["stats"]["window_days"] == 7
+
+    def test_timelines_section_shows_none_when_absent(self, monkeypatch):
+        captured, result = self._capture_and_run(monkeypatch)
+
+        assert "Daily timelines" in captured["user"]
+        assert "(no cached timelines)" in captured["user"]
+        assert result["stats"]["cached_timelines"] == 0
+
+    def test_both_summaries_and_timelines_can_coexist(self, monkeypatch):
+        """Mixed coverage — summary for one day, timeline for another,
+        both present in the prompt, counts independent in stats."""
+        from datetime import datetime, timedelta
+        today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        history.save_day_summary(
+            today, "You spent today on feature X.",
+            provider="local", model="stub", style="descriptive", entry_count=3,
+        )
+        history.save_day_timeline(
+            yesterday, "Evening: reflected on onboarding.",
+            provider="local", model="stub", entry_count=2,
+        )
+
+        captured, result = self._capture_and_run(monkeypatch)
+
+        assert "You spent today on feature X." in captured["user"]
+        assert "Evening: reflected on onboarding." in captured["user"]
+        assert result["stats"]["cached_summaries"] == 1
+        assert result["stats"]["cached_timelines"] == 1
