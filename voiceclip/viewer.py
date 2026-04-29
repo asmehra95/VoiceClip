@@ -78,10 +78,17 @@ def _day_payload(date_str: str, include_summary: bool = True) -> dict:
 
     summary_block: dict | None = None
     summary_error: str | None = None
+    timeline_block: dict | None = None
     if include_summary and config.SUMMARIES_PROVIDER != "none" and entries:
         cached = history.get_day_summary(date_str)
         if cached:
             summary_block = cached
+        # Timeline shares the summaries.* provider/model config. Only
+        # surface if one's been generated — the UI shows a Generate
+        # button otherwise, just like summaries.
+        cached_tl = history.get_day_timeline(date_str)
+        if cached_tl:
+            timeline_block = cached_tl
 
     # Resolve the currently-active model id for the configured provider.
     # Shown on the "Generate" card so the user knows what's about to run.
@@ -105,6 +112,10 @@ def _day_payload(date_str: str, include_summary: bool = True) -> dict:
         "summary_provider": config.SUMMARIES_PROVIDER,
         "summary_model": active_model,
         "summary_error": summary_error,
+        # Timeline piggybacks on the summaries config — same provider,
+        # same model, different output shape. UI renders a parallel
+        # collapsible below the summary card.
+        "timeline": timeline_block,
     }
 
 
@@ -1058,6 +1069,35 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 # Actually unexpected — full traceback is fair.
                 log.exception("Summarize crashed")
+                self._json({"error": f"internal error: {e}"}, status=500)
+            return
+
+        if path == "/api/timeline":
+            # Generate a chronological walkthrough of the day. Structurally
+            # different from the summary (time-period paragraphs) but reuses
+            # the same summaries.* config for provider/model.
+            date = payload.get("date") or datetime.now().strftime("%Y-%m-%d")
+            force = bool(payload.get("force", False))
+            try:
+                datetime.strptime(date, "%Y-%m-%d")
+            except ValueError:
+                self._json({"error": "bad date"}, status=400)
+                return
+            if config.SUMMARIES_PROVIDER == "none":
+                self._json({"error": "summaries are disabled in config"}, status=400)
+                return
+            try:
+                from voiceclip.summarizer import generate_timeline
+                result = generate_timeline(date, force=force)
+                if result is None:
+                    self._json({"error": "no entries for that day"}, status=404)
+                else:
+                    self._json({"ok": True, "timeline": result})
+            except RuntimeError as e:
+                log.warning("Timeline failed: %s", e)
+                self._json({"error": str(e)}, status=400)
+            except Exception as e:
+                log.exception("Timeline crashed")
                 self._json({"error": f"internal error: {e}"}, status=500)
             return
 

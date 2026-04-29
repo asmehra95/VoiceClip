@@ -151,6 +151,21 @@ def _migrate(conn: sqlite3.Connection):
             entry_count INTEGER NOT NULL
         )
     """)
+    # Daily timeline cache — chronological walkthrough of the day.
+    # Separate table from day_summaries because the two have independent
+    # lifecycles (regenerating one shouldn't invalidate the other) and
+    # day_summaries.summary is NOT NULL, so we can't easily add a
+    # nullable timeline column without a schema rewrite.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS day_timelines (
+            date TEXT PRIMARY KEY,
+            timeline TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            entry_count INTEGER NOT NULL
+        )
+    """)
     # Research briefs: zero-or-many per entry. Status lets us queue, mark
     # in-progress, record success/failure.
     conn.execute("""
@@ -817,6 +832,62 @@ def save_day_summary(
             _conn.commit()
         except Exception as e:
             log.warning("Failed to save day summary: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Daily timeline cache (LLM-generated chronological walkthrough)
+# ---------------------------------------------------------------------------
+# Separate from day_summaries because summaries and timelines have
+# independent regeneration lifecycles and different cache semantics.
+# Same-shape helpers for consistency.
+
+def get_day_timeline(date: str) -> dict | None:
+    """Return the cached chronological timeline for a day, or None."""
+    if _conn is None:
+        return None
+    row = _conn.execute(
+        "SELECT date, timeline, provider, model, generated_at, entry_count "
+        "FROM day_timelines WHERE date = ?",
+        (date,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "date": row[0],
+        "timeline": row[1],
+        "provider": row[2],
+        "model": row[3],
+        "generated_at": row[4],
+        "entry_count": row[5],
+    }
+
+
+def save_day_timeline(
+    date: str, timeline: str, *,
+    provider: str, model: str, entry_count: int,
+):
+    """Upsert a cached day timeline. Mirrors save_day_summary's shape."""
+    if _conn is None:
+        return
+    with _write_lock:
+        try:
+            _conn.execute(
+                "INSERT INTO day_timelines "
+                "(date, timeline, provider, model, generated_at, entry_count) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(date) DO UPDATE SET "
+                "  timeline=excluded.timeline, provider=excluded.provider, "
+                "  model=excluded.model, generated_at=excluded.generated_at, "
+                "  entry_count=excluded.entry_count",
+                (
+                    date, timeline, provider, model,
+                    datetime.now().isoformat(timespec="seconds"),
+                    entry_count,
+                ),
+            )
+            _conn.commit()
+        except Exception as e:
+            log.warning("Failed to save day timeline: %s", e)
 
 
 def count_for_day(date: str) -> int:

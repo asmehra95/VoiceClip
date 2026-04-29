@@ -491,3 +491,57 @@ class TestRecommendedModelsEndpoint:
         # Falls through to no filter (not an error) — UI won't pass bogus
         # values, but if it did, better to show everything than nothing.
         assert isinstance(data["models"], list)
+
+
+class TestTimelineEndpoint:
+    """POST /api/timeline generates a chronological walkthrough for the
+    day, stored separately from the summary. Mirrors /api/summarize."""
+
+    def test_timeline_disabled_when_provider_none(self, server):
+        code, r = _post(f"{server}/api/timeline", {})
+        assert code == 400
+        assert "disabled" in r["error"].lower()
+
+    def test_timeline_rejects_bad_date(self, server):
+        from voiceclip import config
+        # Force provider != none so we hit the date validation path
+        config.SUMMARIES_PROVIDER = "local"
+        try:
+            code, r = _post(f"{server}/api/timeline", {"date": "not-a-date"})
+            assert code == 400
+        finally:
+            config.SUMMARIES_PROVIDER = "none"
+
+    def test_day_payload_includes_timeline_key_when_empty(self, server):
+        """The /api/day response shape must always include a `timeline`
+        key (null when not cached) so the frontend can rely on it."""
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        data = _get(f"{server}/api/day?date={today}")
+        assert "timeline" in data
+        assert data["timeline"] is None  # fresh DB, never generated
+
+    def test_day_payload_surfaces_cached_timeline(self, server):
+        """After a timeline is saved, /api/day should return it."""
+        from datetime import datetime
+        from voiceclip import config
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # _day_payload gates timeline on SUMMARIES_PROVIDER != "none",
+        # same as summary. Flip it for the assertion; restore after.
+        saved = config.SUMMARIES_PROVIDER
+        config.SUMMARIES_PROVIDER = "local"
+        try:
+            # Need an entry on the day so stats aren't empty
+            history.save("raw", "A real entry.", 1.0, kind="transcription",
+                         app_name="Slack")
+            history.save_day_timeline(
+                today, "Morning: you did a thing.",
+                provider="openai", model="gpt-4o-mini", entry_count=1,
+            )
+            data = _get(f"{server}/api/day?date={today}")
+            assert data["timeline"] is not None
+            assert data["timeline"]["timeline"] == "Morning: you did a thing."
+            assert data["timeline"]["model"] == "gpt-4o-mini"
+        finally:
+            config.SUMMARIES_PROVIDER = saved

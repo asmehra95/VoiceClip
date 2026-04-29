@@ -213,6 +213,43 @@
         ]);
         summarySlot.appendChild(hint);
       }
+
+      // Timeline block — same collapsed-by-default pattern as the
+      // summary, rendered right below it. Shares the summaries.*
+      // provider/model config, so we only render when summaries are
+      // enabled (mirrors the summary gating above).
+      if (data.summary_enabled) {
+        if (data.timeline && data.timeline.timeline) {
+          const tlPreview = previewOf(data.timeline.timeline);
+          const tlEl = el("details", {class: "summary-details timeline-details"});
+          tlEl.appendChild(el("summary", null, [
+            el("span", {class: "summary-label"}, "Timeline"),
+            el("span", {class: "summary-meta"},
+              `${data.timeline.provider} · ${shortModel(data.timeline.model)}`),
+            el("span", {class: "summary-preview"}, tlPreview),
+            el("button", {
+              class: "refresh",
+              onclick: (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                regenTimeline(data.date);
+              },
+            }, "Refresh"),
+          ]));
+          tlEl.appendChild(el("div", {class: "body"}, data.timeline.timeline));
+          summarySlot.appendChild(tlEl);
+        } else {
+          // No timeline cached — offer to generate one. Different copy
+          // from the summary's generate affordance so users understand
+          // this is a separate, optional thing.
+          const label = data.summary_model
+            ? `Generate a chronological timeline? · ${data.summary_provider} · ${shortModel(data.summary_model)}`
+            : "Generate a chronological timeline for this day?";
+          const msg = el("span", null, label);
+          const btn = el("button", {onclick: () => regenTimeline(data.date)}, "Generate");
+          summarySlot.appendChild(el("div", {class:"generate timeline-generate"}, [msg, btn]));
+        }
+      }
     }
 
     const appsSlot = document.getElementById("apps_slot");
@@ -417,8 +454,19 @@
   }
 
   async function regen(date) {
+    // Surgical replace: swap out ONLY the Summary card with a loading
+    // placeholder, leave the Timeline card (if present) untouched. Avoids
+    // the user losing both views for 10-60s while one regenerates.
     const slot = document.getElementById("summary_slot");
-    slot.innerHTML = `<div class="generate"><span><span class="spinner"></span>Thinking — local models take 15-60 seconds on first run…</span></div>`;
+    const existingSummary = slot.querySelector("details.summary-details:not(.timeline-details), .generate:not(.timeline-generate)");
+    const placeholder = el("div", {class: "generate"}, [
+      el("span", null, [el("span", {class: "spinner"}), "Thinking — local models take 15-60 seconds on first run…"]),
+    ]);
+    if (existingSummary) {
+      slot.replaceChild(placeholder, existingSummary);
+    } else {
+      slot.insertBefore(placeholder, slot.firstChild);
+    }
     try {
       const r = await fetch("/api/summarize", {
         method: "POST",
@@ -427,12 +475,45 @@
       });
       const data = await r.json();
       if (!r.ok) {
-        slot.innerHTML = `<div class="generate"><span style="color:#c44; white-space:pre-line">${escapeHtml(data.error || "failed")}</span></div>`;
+        placeholder.innerHTML = `<span style="color:#c44; white-space:pre-line">${escapeHtml(data.error || "failed")}</span>`;
         return;
       }
       load(date);
     } catch(e) {
-      slot.innerHTML = `<div class="generate"><span style="color:#c44">${escapeHtml(e.message)}</span></div>`;
+      placeholder.innerHTML = `<span style="color:#c44">${escapeHtml(e.message)}</span>`;
+    }
+  }
+
+  async function regenTimeline(date) {
+    // Same surgical pattern as regen — swap only the Timeline card.
+    const slot = document.getElementById("summary_slot");
+    const existingTimeline = slot.querySelector("details.timeline-details, .timeline-generate");
+    const placeholder = el("div", {class: "generate timeline-generate"}, [
+      el("span", null, [
+        el("span", {class: "spinner"}),
+        "Building a chronological timeline — local models take 20-60 seconds…",
+      ]),
+    ]);
+    if (existingTimeline) {
+      slot.replaceChild(placeholder, existingTimeline);
+    } else {
+      // Append — timeline always sits below summary
+      slot.appendChild(placeholder);
+    }
+    try {
+      const r = await fetch("/api/timeline", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({date, force: true}),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        placeholder.innerHTML = `<span style="color:#c44; white-space:pre-line">${escapeHtml(data.error || "failed")}</span>`;
+        return;
+      }
+      load(date);
+    } catch(e) {
+      placeholder.innerHTML = `<span style="color:#c44">${escapeHtml(e.message)}</span>`;
     }
   }
 
