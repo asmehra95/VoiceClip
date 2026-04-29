@@ -218,9 +218,12 @@ def _humanize_provider_error(err: Exception, provider: str, model_id: str) -> st
 
 
 def network_warning() -> str | None:
-    if config.RESEARCH_PROVIDER in ("openai", "anthropic"):
-        return (
-            f"Research: cloud provider '{config.RESEARCH_PROVIDER}' is enabled. "
-            "When you research a topic, that topic is sent to the provider."
-        )
-    return None
+    """Back-compat wrapper around config.cloud_provider_warning('research').
+
+    Kept as `network_warning` rather than `cloud_provider_warning`
+    because research is the one feature that ALWAYS uses the network
+    when enabled (no local provider for cloud web-search). Callers that
+    use this name are signalling that network intent, not just
+    cloud-vs-local.
+    """
+    return config.cloud_provider_warning("research")

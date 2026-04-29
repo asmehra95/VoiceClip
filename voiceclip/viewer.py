@@ -1043,65 +1043,83 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/summarize":
-            date = payload.get("date") or datetime.now().strftime("%Y-%m-%d")
-            force = bool(payload.get("force", False))
-            try:
-                datetime.strptime(date, "%Y-%m-%d")
-            except ValueError:
-                self._json({"error": "bad date"}, status=400)
-                return
-            if config.SUMMARIES_PROVIDER == "none":
-                self._json({"error": "summaries are disabled in config"}, status=400)
-                return
-            try:
-                from voiceclip.summarizer import summarize_day
-                result = summarize_day(date, force=force)
-                if result is None:
-                    self._json({"error": "no entries for that day"}, status=404)
-                else:
-                    self._json({"ok": True, "summary": result})
-            except RuntimeError as e:
-                # Expected failures (missing deps, missing API keys, bad config).
-                # Log a single warning line — no stack trace — and return the
-                # message so the UI can show a friendly hint.
-                log.warning("Summarize failed: %s", e)
-                self._json({"error": str(e)}, status=400)
-            except Exception as e:
-                # Actually unexpected — full traceback is fair.
-                log.exception("Summarize crashed")
-                self._json({"error": f"internal error: {e}"}, status=500)
+            from voiceclip.summarizer import summarize_day
+            self._handle_dated_llm_feature(
+                payload,
+                feature_name="Summarize",
+                response_key="summary",
+                disabled_error="summaries are disabled in config",
+                feature_func=summarize_day,
+            )
             return
 
         if path == "/api/timeline":
             # Generate a chronological walkthrough of the day. Structurally
             # different from the summary (time-period paragraphs) but reuses
             # the same summaries.* config for provider/model.
-            date = payload.get("date") or datetime.now().strftime("%Y-%m-%d")
-            force = bool(payload.get("force", False))
-            try:
-                datetime.strptime(date, "%Y-%m-%d")
-            except ValueError:
-                self._json({"error": "bad date"}, status=400)
-                return
-            if config.SUMMARIES_PROVIDER == "none":
-                self._json({"error": "summaries are disabled in config"}, status=400)
-                return
-            try:
-                from voiceclip.summarizer import generate_timeline
-                result = generate_timeline(date, force=force)
-                if result is None:
-                    self._json({"error": "no entries for that day"}, status=404)
-                else:
-                    self._json({"ok": True, "timeline": result})
-            except RuntimeError as e:
-                log.warning("Timeline failed: %s", e)
-                self._json({"error": str(e)}, status=400)
-            except Exception as e:
-                log.exception("Timeline crashed")
-                self._json({"error": f"internal error: {e}"}, status=500)
+            from voiceclip.summarizer import generate_timeline
+            self._handle_dated_llm_feature(
+                payload,
+                feature_name="Timeline",
+                response_key="timeline",
+                disabled_error="summaries are disabled in config",
+                feature_func=generate_timeline,
+            )
             return
 
         self._not_found()
+
+    def _handle_dated_llm_feature(
+        self,
+        payload: dict,
+        *,
+        feature_name: str,
+        response_key: str,
+        disabled_error: str,
+        feature_func,
+    ):
+        """Shared handler for /api/summarize and /api/timeline (and any
+        future date-based LLM feature that reuses the summaries provider).
+
+        Contract:
+          - Accepts {date, force} from the payload
+          - Validates the date string
+          - Refuses with 400 if SUMMARIES_PROVIDER is 'none'
+          - Calls feature_func(date, force=force)
+          - 404 if result is None (no entries for that day)
+          - RuntimeError -> 400 with the humanized message
+          - Any other Exception -> 500 with 'internal error: ...'
+          - Success response is {"ok": True, <response_key>: result}
+
+        Both /api/summarize and /api/timeline share this shape — keeping
+        a single place to edit means e.g. adding a new status code or a
+        retry-after header only touches one function.
+        """
+        date = payload.get("date") or datetime.now().strftime("%Y-%m-%d")
+        force = bool(payload.get("force", False))
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            self._json({"error": "bad date"}, status=400)
+            return
+        if config.SUMMARIES_PROVIDER == "none":
+            self._json({"error": disabled_error}, status=400)
+            return
+        try:
+            result = feature_func(date, force=force)
+            if result is None:
+                self._json({"error": "no entries for that day"}, status=404)
+            else:
+                self._json({"ok": True, response_key: result})
+        except RuntimeError as e:
+            # Expected failures (missing deps, missing API keys, bad config).
+            # One warning line, no stack trace.
+            log.warning("%s failed: %s", feature_name, e)
+            self._json({"error": str(e)}, status=400)
+        except Exception as e:
+            # Actually unexpected — full traceback is fair.
+            log.exception("%s crashed", feature_name)
+            self._json({"error": f"internal error: {e}"}, status=500)
 
 
 # ---------------------------------------------------------------------------

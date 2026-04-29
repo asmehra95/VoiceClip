@@ -449,6 +449,54 @@ def get_model_repo():
 
 
 # ---------------------------------------------------------------------------
+# Cloud-provider warnings
+# ---------------------------------------------------------------------------
+# Each feature (summaries / research / patterns) needs to warn the user
+# when its provider is set to a cloud service, so they know data will
+# leave the machine. Centralized here so the message format is consistent
+# and adding a new feature is one mapping entry, not a new function.
+
+_CLOUD_WARNING_COPY = {
+    "summaries": (
+        "SUMMARIES_PROVIDER",
+        "Summaries",
+        "Your day's entries will be sent to that provider when a summary "
+        "is generated.",
+    ),
+    "research": (
+        "RESEARCH_PROVIDER",
+        "Research",
+        "When you research a topic, that topic is sent to the provider. "
+        "If the model uses web search, the topic also goes to the search "
+        "backend.",
+    ),
+    "patterns": (
+        "PATTERNS_PROVIDER",
+        "Patterns",
+        "When you open the Patterns tab, your recent reflections and daily "
+        "summaries are sent to the provider.",
+    ),
+}
+
+
+def cloud_provider_warning(feature: str) -> str | None:
+    """Return a user-facing warning string if the named feature is
+    currently set to a cloud provider, else None.
+
+    `feature` is one of: 'summaries', 'research', 'patterns'.
+    Unknown features return None (no warning rather than a crash).
+    """
+    entry = _CLOUD_WARNING_COPY.get(feature)
+    if entry is None:
+        return None
+    attr, label, body = entry
+    provider = globals().get(attr, "none")
+    if provider not in ("openai", "anthropic"):
+        return None
+    return f"{label}: cloud provider '{provider}' is enabled. {body}"
+
+
+# ---------------------------------------------------------------------------
 # Hotkey resolution
 # ---------------------------------------------------------------------------
 

@@ -335,10 +335,17 @@
     return wrap;
   }
 
-  // Inline editing — auto-save on blur, Esc to cancel, Cmd+Enter to save.
-  function wireInlineEdit(node, entry) {
-    node.dataset.original = entry.text;
-    // Prevent pasted HTML — always insert as plain text.
+  // Wire the standard contenteditable behaviors onto a node:
+  //   - paste inserts plain text (no HTML)
+  //   - Esc restores the previous value and blurs
+  //   - Cmd/Ctrl+Enter blurs (callers wire save-on-blur)
+  //
+  // `getOriginal()` is a callback so callers can pull the latest value
+  // (e.g. from `node.dataset.original`, which they set after each save).
+  // Intentionally does NOT own the save logic — each caller's commit
+  // path has slightly different UI reactions (edited-pill, topic.text
+  // sync) that aren't worth parameterizing.
+  function wireContentEditableKeybinds(node, getOriginal) {
     node.addEventListener("paste", (ev) => {
       ev.preventDefault();
       const text = (ev.clipboardData || window.clipboardData).getData("text/plain");
@@ -346,14 +353,20 @@
     });
     node.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape") {
-        node.textContent = node.dataset.original;
+        node.textContent = getOriginal();
         node.blur();
         ev.preventDefault();
       } else if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
-        node.blur();
         ev.preventDefault();
+        node.blur();
       }
     });
+  }
+
+  // Inline editing — auto-save on blur, Esc to cancel, Cmd+Enter to save.
+  function wireInlineEdit(node, entry) {
+    node.dataset.original = entry.text;
+    wireContentEditableKeybinds(node, () => node.dataset.original);
     node.addEventListener("blur", async () => {
       const newText = node.textContent.trim();
       const oldText = node.dataset.original;
@@ -420,9 +433,33 @@
     } catch(e) { /* best effort */ }
   }
 
-  function handleDelete(btn, node, entry) {
+  // Two-click confirm pattern used by entry/topic/model delete buttons.
+  // First click arms the button with a warning label; second click within
+  // timeoutMs calls onConfirm. If no second click comes, the button reverts.
+  //
+  // The `confirmLabel` override lets callers like the model-delete button
+  // produce a richer warning ("Delete 4.3 GB? (summaries will redownload)").
+  function twoClickConfirm(btn, onConfirm, {timeoutMs = 3000, confirmLabel = "Really delete?"} = {}) {
     if (btn.dataset.armed === "1") {
       btn.dataset.armed = "";
+      onConfirm();
+      return;
+    }
+    btn.dataset.armed = "1";
+    const prev = btn.textContent;
+    btn.textContent = confirmLabel;
+    btn.classList.add("armed");
+    setTimeout(() => {
+      if (btn.dataset.armed === "1") {
+        btn.dataset.armed = "";
+        btn.textContent = prev;
+        btn.classList.remove("armed");
+      }
+    }, timeoutMs);
+  }
+
+  function handleDelete(btn, node, entry) {
+    twoClickConfirm(btn, () => {
       fetch("/api/delete", {
         method: "POST",
         headers: {"Content-Type":"application/json"},
@@ -431,19 +468,7 @@
         if (r.ok) fadeOutAndReconcile(node);
         else flash(btn, "Failed");
       });
-      return;
-    }
-    btn.dataset.armed = "1";
-    const prev = btn.textContent;
-    btn.textContent = "Really delete?";
-    btn.classList.add("armed");
-    setTimeout(() => {
-      if (btn.dataset.armed === "1") {
-        btn.dataset.armed = "";
-        btn.textContent = prev;
-        btn.classList.remove("armed");
-      }
-    }, 3000);
+    });
   }
 
   function flash(btn, label) {
@@ -678,21 +703,7 @@
   // with is_research_topic=1, so the same update path works).
   function wireTopicTitleEdit(node, topic) {
     node.dataset.original = topic.text;
-    node.addEventListener("paste", (ev) => {
-      ev.preventDefault();
-      const text = (ev.clipboardData || window.clipboardData).getData("text/plain");
-      document.execCommand("insertText", false, text);
-    });
-    node.addEventListener("keydown", (ev) => {
-      if (ev.key === "Escape") {
-        node.textContent = node.dataset.original;
-        node.blur();
-        ev.preventDefault();
-      } else if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
-        ev.preventDefault();
-        node.blur();
-      }
-    });
+    wireContentEditableKeybinds(node, () => node.dataset.original);
     node.addEventListener("blur", async () => {
       const newText = node.textContent.trim();
       const oldText = node.dataset.original;
@@ -1018,8 +1029,7 @@
   }
 
   function handleTopicDelete(btn, node, topic) {
-    if (btn.dataset.armed === "1") {
-      btn.dataset.armed = "";
+    twoClickConfirm(btn, () => {
       fetch("/api/delete", {
         method: "POST",
         headers: {"Content-Type":"application/json"},
@@ -1030,18 +1040,7 @@
           setTimeout(() => { node.remove(); loadQueue(); }, 360);
         } else flash(btn, "Failed");
       });
-      return;
-    }
-    btn.dataset.armed = "1";
-    const prev = btn.textContent;
-    btn.textContent = "Really delete?";
-    btn.classList.add("armed");
-    setTimeout(() => {      if (btn.dataset.armed === "1") {
-        btn.dataset.armed = "";
-        btn.textContent = prev;
-        btn.classList.remove("armed");
-      }
-    }, 3000);
+    });
   }
 
   // Topic input
@@ -1720,25 +1719,14 @@
   // model comes back from the server with a hard refusal, so no arming
   // needed — we surface the 409 as an inline error.
   function handleModelDelete(btn, row, model) {
-    if (btn.dataset.armed === "1") {
-      btn.dataset.armed = "";
-      deleteModel(btn, row, model);
-      return;
-    }
-    btn.dataset.armed = "1";
-    const prev = btn.textContent;
     const warning = model.in_use_for
       ? `Delete ${model.size_on_disk_str}? (${model.in_use_for} will re-download)`
       : `Delete ${model.size_on_disk_str}?`;
-    btn.textContent = warning;
-    btn.classList.add("armed");
-    setTimeout(() => {
-      if (btn.dataset.armed === "1") {
-        btn.dataset.armed = "";
-        btn.textContent = prev;
-        btn.classList.remove("armed");
-      }
-    }, 4000);
+    twoClickConfirm(
+      btn,
+      () => deleteModel(btn, row, model),
+      {timeoutMs: 4000, confirmLabel: warning},
+    );
   }
 
   async function deleteModel(btn, row, model) {

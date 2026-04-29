@@ -249,10 +249,5 @@ def generate_timeline(date: str, *, force: bool = False) -> dict | None:
 
 
 def cloud_provider_warning() -> str | None:
-    if config.SUMMARIES_PROVIDER in ("openai", "anthropic"):
-        return (
-            f"Summaries: cloud provider '{config.SUMMARIES_PROVIDER}' is enabled. "
-            "Your day's entries will be sent to that provider when a summary "
-            "is generated."
-        )
-    return None
+    """Back-compat wrapper around config.cloud_provider_warning('summaries')."""
+    return config.cloud_provider_warning("summaries")

@@ -271,10 +271,5 @@ def generate_patterns(window_days: int | None = None, *, force: bool = False) ->
 
 
 def cloud_provider_warning() -> str | None:
-    if config.PATTERNS_PROVIDER in ("openai", "anthropic"):
-        return (
-            f"Patterns: cloud provider '{config.PATTERNS_PROVIDER}' is enabled. "
-            "When you open the Patterns tab, your recent reflections and daily "
-            "summaries are sent to the provider."
-        )
-    return None
+    """Back-compat wrapper around config.cloud_provider_warning('patterns')."""
+    return config.cloud_provider_warning("patterns")
