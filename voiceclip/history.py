@@ -621,6 +621,9 @@ def delete_entry(entry_id: int) -> dict | None:
     Used by the web viewer's per-entry delete button. This bypasses the
     interactive confirmation used by clear_all/clear_kind because the UI
     does its own two-step confirm.
+
+    Wrapped in _with_retry so a transient SQLite error doesn't leave the
+    user thinking they deleted something when they didn't.
     """
     if _conn is None:
         return None
@@ -630,19 +633,21 @@ def delete_entry(entry_id: int) -> dict | None:
     ).fetchone()
     if not existing:
         return None
-    with _write_lock:
-        try:
+
+    def _do():
+        if _conn is None:
+            return None
+        with _write_lock:
             _conn.execute("DELETE FROM transcriptions WHERE id = ?", (entry_id,))
             _conn.commit()
-        except Exception as e:
-            log.warning("Failed to delete entry %s: %s", entry_id, e)
-            return None
-    return {
-        "id": existing[0],
-        "timestamp": existing[1],
-        "text": existing[2],
-        "kind": existing[3],
-    }
+            return {
+                "id": existing[0],
+                "timestamp": existing[1],
+                "text": existing[2],
+                "kind": existing[3],
+            }
+
+    return _with_retry(_do)
 
 
 def promote_to_reflection(entry_id: int | None = None, last: bool = False) -> dict | None:
@@ -675,16 +680,22 @@ def promote_to_reflection(entry_id: int | None = None, last: bool = False) -> di
     if existing[3] == "reflection":
         return None
 
-    _conn.execute(
-        "UPDATE transcriptions SET kind = 'reflection' WHERE id = ?",
-        (entry_id,),
-    )
-    _conn.commit()
-    return {
-        "id": existing[0],
-        "timestamp": existing[1],
-        "text": existing[2],
-    }
+    def _do():
+        if _conn is None:
+            return None
+        with _write_lock:
+            _conn.execute(
+                "UPDATE transcriptions SET kind = 'reflection' WHERE id = ?",
+                (entry_id,),
+            )
+            _conn.commit()
+            return {
+                "id": existing[0],
+                "timestamp": existing[1],
+                "text": existing[2],
+            }
+
+    return _with_retry(_do)
 
 
 
@@ -810,11 +821,15 @@ def save_day_summary(
     date: str, summary: str, *,
     provider: str, model: str, style: str, entry_count: int,
 ):
-    """Upsert a cached day summary."""
+    """Upsert a cached day summary. Wrapped in _with_retry so a transient
+    write failure doesn't silently discard a just-generated summary."""
     if _conn is None:
         return
-    with _write_lock:
-        try:
+
+    def _do():
+        if _conn is None:
+            return None
+        with _write_lock:
             _conn.execute(
                 "INSERT INTO day_summaries "
                 "(date, summary, provider, model, style, generated_at, entry_count) "
@@ -830,8 +845,9 @@ def save_day_summary(
                 ),
             )
             _conn.commit()
-        except Exception as e:
-            log.warning("Failed to save day summary: %s", e)
+            return True
+
+    _with_retry(_do)
 
 
 # ---------------------------------------------------------------------------
@@ -866,11 +882,16 @@ def save_day_timeline(
     date: str, timeline: str, *,
     provider: str, model: str, entry_count: int,
 ):
-    """Upsert a cached day timeline. Mirrors save_day_summary's shape."""
+    """Upsert a cached day timeline. Mirrors save_day_summary's shape.
+    Wrapped in _with_retry — timeline generation is expensive, losing it
+    to a transient write error would be painful."""
     if _conn is None:
         return
-    with _write_lock:
-        try:
+
+    def _do():
+        if _conn is None:
+            return None
+        with _write_lock:
             _conn.execute(
                 "INSERT INTO day_timelines "
                 "(date, timeline, provider, model, generated_at, entry_count) "
@@ -886,8 +907,9 @@ def save_day_timeline(
                 ),
             )
             _conn.commit()
-        except Exception as e:
-            log.warning("Failed to save day timeline: %s", e)
+            return True
+
+    _with_retry(_do)
 
 
 def count_for_day(date: str) -> int:
@@ -1165,12 +1187,16 @@ def save_brief(
     used_web_search: bool = False,
     error: str | None = None,
 ) -> int | None:
-    """Insert a research brief row. Returns the new brief id."""
+    """Insert a research brief row. Returns the new brief id.
+    Wrapped in _with_retry since a lost brief means a lost research call."""
     if _conn is None:
         return None
     import json as _json
-    with _write_lock:
-        try:
+
+    def _do():
+        if _conn is None:
+            return None
+        with _write_lock:
             cur = _conn.execute(
                 "INSERT INTO research_briefs "
                 "(entry_id, status, brief_text, sources_json, provider, model, "
@@ -1187,9 +1213,8 @@ def save_brief(
             )
             _conn.commit()
             return cur.lastrowid
-        except Exception as e:
-            log.warning("Failed to save brief: %s", e)
-            return None
+
+    return _with_retry(_do)
 
 
 def get_topic(entry_id: int) -> dict | None:

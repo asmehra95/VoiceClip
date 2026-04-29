@@ -284,17 +284,6 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
 }
 
 
-def _get_nested(d: dict, key: str):
-    """Resolve a dotted key ('summaries.provider') against a nested dict."""
-    parts = key.split(".")
-    cur = d
-    for p in parts:
-        if not isinstance(cur, dict) or p not in cur:
-            return None
-        cur = cur[p]
-    return cur
-
-
 def _runtime_value(key: str):
     """Read the current runtime value for a dotted config key."""
     mapping = {
