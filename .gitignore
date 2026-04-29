@@ -5,3 +5,6 @@ __pycache__/
 .kiro/
 .vscode/
 *.wav
+
+# Editable install artifact from `pip install -e .`
+voiceclip.egg-info/

@@ -5,7 +5,7 @@ slipping through) are fine; false positives (real content classified
 as garbage) are bad. These tests lock that asymmetry in.
 """
 
-from voiceclip.text_quality import is_garbage_text, filter_entries
+from voiceclip.text_quality import filter_entries, is_garbage_text
 
 
 class TestPassThroughShortText:

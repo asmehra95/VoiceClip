@@ -250,7 +250,7 @@ def generate_patterns(window_days: int | None = None, *, force: bool = False) ->
         raise RuntimeError(
             "The model returned output I couldn't parse. Try refreshing; "
             "larger models tend to produce cleaner JSON."
-        )
+        ) from e
 
     themes = (parsed.get("themes") or [])[:4]
     suggestions = (parsed.get("suggestions") or [])[:3]

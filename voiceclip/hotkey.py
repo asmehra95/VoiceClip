@@ -24,14 +24,16 @@ import time
 
 from pynput import keyboard
 
-from voiceclip.config import MIN_HOLD_SECONDS, HISTORY_ENABLED
-from voiceclip.recorder import Recorder
-from voiceclip.transcriber import transcribe
+from voiceclip.config import HISTORY_ENABLED, MIN_HOLD_SECONDS
 from voiceclip.formatter import format_text
 from voiceclip.macos import (
-    copy_to_clipboard, copy_paste_and_restore, paste,
-    notify, beep, get_active_app_name,
+    beep,
+    copy_paste_and_restore,
+    get_active_app_name,
+    notify,
 )
+from voiceclip.recorder import Recorder
+from voiceclip.transcriber import transcribe
 
 log = logging.getLogger(__name__)
 

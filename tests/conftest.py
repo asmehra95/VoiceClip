@@ -43,7 +43,6 @@ import pytest
 
 from voiceclip import config, history
 
-
 # Every VOICECLIP_* env var the test suite clears. Centralized so adding
 # a new env override is a one-line addition and all tests benefit.
 _ENV_VARS_TO_CLEAR = [

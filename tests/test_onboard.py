@@ -11,8 +11,9 @@ so we don't drive it end-to-end in tests. We cover:
 
 import json
 import os
-import pytest
 from pathlib import Path
+
+import pytest
 
 from voiceclip import config, onboard
 

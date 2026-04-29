@@ -8,7 +8,7 @@ server-side and they return clean answers.
 
 import pytest
 
-from voiceclip import config, history, llm_provider, summarizer, patterns
+from voiceclip import config, history, llm_provider, patterns, summarizer
 
 
 @pytest.fixture(autouse=True)
@@ -119,7 +119,7 @@ class TestTimelineGeneration:
         """The timeline system prompt must contain the word 'chronological'
         so reasoning models understand the task. Pins the contract without
         asserting the exact wording (which can evolve)."""
-        from voiceclip.summarizer import generate_timeline, _SYSTEM_PROMPT_TIMELINE
+        from voiceclip.summarizer import _SYSTEM_PROMPT_TIMELINE, generate_timeline
 
         captured = {}
 

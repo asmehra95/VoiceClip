@@ -24,13 +24,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 import sys
-import threading
-import time
 from pathlib import Path
-from typing import Optional
 
 from voiceclip import config
 from voiceclip.config_io import write_config_patch
@@ -104,7 +100,7 @@ def _pause(msg: str = "Press Enter to continue, or 's' to skip this step"):
         raw = input(f"  {_DIM}{msg}{_RESET} ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         print()
-        raise SystemExit(0)
+        raise SystemExit(0) from None
     return raw != "s"
 
 

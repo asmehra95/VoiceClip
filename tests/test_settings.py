@@ -10,13 +10,14 @@ Covers:
 
 import json
 import os
+import urllib.request
 from pathlib import Path
 
 import pytest
-import urllib.request
 
+from tests.conftest import http_get as _get
+from tests.conftest import http_post as _post
 from voiceclip import config, config_io, history
-from tests.conftest import http_get as _get, http_post as _post
 
 
 @pytest.fixture

@@ -14,16 +14,20 @@ Performance notes:
 
 import logging
 import math
+import multiprocessing
 import os
 import tempfile
 import threading
 import time
-import multiprocessing
 
 from voiceclip.config import (
-    RecorderCmd, SAMPLE_RATE, SILENCE_RMS_THRESHOLD,
-    MIN_AUDIO_DURATION, MIN_FILE_BYTES, TEMP_PREFIX,
     MAX_RECORDING_SECONDS,
+    MIN_AUDIO_DURATION,
+    MIN_FILE_BYTES,
+    SAMPLE_RATE,
+    SILENCE_RMS_THRESHOLD,
+    TEMP_PREFIX,
+    RecorderCmd,
 )
 from voiceclip.utils import safe_unlink
 
@@ -36,9 +40,9 @@ log = logging.getLogger(__name__)
 
 def _recorder_loop(conn):
     """Entry point for the recorder child process."""
+    import numpy as np
     import sounddevice as sd
     import soundfile as sf
-    import numpy as np
 
     rec_event = threading.Event()
     frames_lock = threading.Lock()
@@ -296,7 +300,7 @@ class Recorder:
                     raise RuntimeError("Recorder timed out")
             except (BrokenPipeError, EOFError, OSError) as e:
                 self._alive = False
-                raise RuntimeError(f"Recorder died: {e}")
+                raise RuntimeError(f"Recorder died: {e}") from e
 
     def begin(self):
         """Start capturing audio."""

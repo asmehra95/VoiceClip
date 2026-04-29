@@ -7,7 +7,6 @@ Performance notes:
 """
 
 import logging
-import os
 import tempfile
 import threading
 
@@ -15,7 +14,7 @@ import mlx_whisper
 import numpy as np
 import soundfile as sf
 
-from voiceclip.config import ENGLISH_ONLY, TEMP_PREFIX, INITIAL_PROMPT, get_model_repo
+from voiceclip.config import ENGLISH_ONLY, INITIAL_PROMPT, TEMP_PREFIX, get_model_repo
 from voiceclip.utils import safe_unlink
 
 log = logging.getLogger(__name__)

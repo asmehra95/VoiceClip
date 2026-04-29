@@ -14,7 +14,7 @@ import sys
 import time
 
 from voiceclip import __version__
-from voiceclip.macos import cleanup_sounds, check_accessibility, check_microphone
+from voiceclip.macos import check_accessibility, check_microphone, cleanup_sounds
 
 
 def setup_logging():
@@ -112,9 +112,16 @@ def _handle_history(args):
         sys.exit(0)
 
     from voiceclip.history import (
-        init, query_recent, query_today, query_yesterday,
-        query_search, get_by_id, get_entry_full, clear_all, clear_kind,
-        count, promote_to_reflection,
+        clear_all,
+        clear_kind,
+        count,
+        get_entry_full,
+        init,
+        promote_to_reflection,
+        query_recent,
+        query_search,
+        query_today,
+        query_yesterday,
     )
     init()
 
@@ -202,9 +209,9 @@ def _handle_summarize(args):
         )
         sys.exit(0)
 
-    from voiceclip.history import init
-    from voiceclip.summarizer import summarize_day, cloud_provider_warning
     from voiceclip.consent import check_and_warn as _cloud_check
+    from voiceclip.history import init
+    from voiceclip.summarizer import cloud_provider_warning, summarize_day
 
     init()
     _cloud_check()
@@ -263,7 +270,8 @@ def _run_voiceclip():
     # First-run walkthrough, if the user hasn't been through it yet.
     # Safe no-op on non-TTY / repeat runs; reloads config after in case the
     # user opted into new features during the flow.
-    from voiceclip.onboard import run as run_onboard, needs_onboarding
+    from voiceclip.onboard import needs_onboarding
+    from voiceclip.onboard import run as run_onboard
     if needs_onboarding():
         run_onboard()
         config.load()  # pick up any opt-ins the user just committed
@@ -274,10 +282,10 @@ def _run_voiceclip():
 
     log = logging.getLogger("voiceclip")
 
+    from voiceclip.formatter import build_patterns
+    from voiceclip.hotkey import HotkeyHandler
     from voiceclip.recorder import Recorder, cleanup_stale_temps
     from voiceclip.transcriber import preload_model
-    from voiceclip.hotkey import HotkeyHandler
-    from voiceclip.formatter import build_patterns
 
     print("=" * 50)
     print(f"  🎙️  VoiceClip v{__version__}")
@@ -311,7 +319,8 @@ def _run_voiceclip():
 
     # Initialize history if enabled
     if config.HISTORY_ENABLED:
-        from voiceclip.history import init as init_history, cleanup as cleanup_history
+        from voiceclip.history import cleanup as cleanup_history
+        from voiceclip.history import init as init_history
         init_history()
         cleanup_history(
             config.HISTORY_MAX_DAYS,

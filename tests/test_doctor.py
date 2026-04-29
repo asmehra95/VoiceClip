@@ -6,7 +6,9 @@ section headers, returns an exit code (0 or 1).
 """
 
 import os
+
 import pytest
+
 from voiceclip import config, history
 
 

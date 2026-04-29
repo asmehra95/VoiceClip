@@ -16,7 +16,8 @@ import os
 import queue
 import re
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -62,10 +63,11 @@ def _preflight_model_type(model_id: str) -> str | None:
     skips the preflight shortcut and tries mlx-lm first.
     """
     try:
-        from huggingface_hub import hf_hub_download
         import json as _json
+
+        from huggingface_hub import hf_hub_download
         path = hf_hub_download(model_id, "config.json")
-        with open(path, "r") as f:
+        with open(path) as f:
             cfg = _json.loads(f.read())
         return cfg.get("model_type")
     except Exception as e:
@@ -109,12 +111,12 @@ _mlx_cache_lock = threading.Lock()
 # the right behavior anyway since a single MLX model can only generate
 # one stream at a time without explicit batching.
 
-_worker_queue: "queue.Queue[tuple[Callable, tuple, dict, queue.Queue]] | None" = None
+_worker_queue: queue.Queue[tuple[Callable, tuple, dict, queue.Queue]] | None = None
 _worker_thread: threading.Thread | None = None
 _worker_lock = threading.Lock()
 
 
-def _worker_loop(work_queue: "queue.Queue[tuple[Callable, tuple, dict, queue.Queue]]"):
+def _worker_loop(work_queue: queue.Queue[tuple[Callable, tuple, dict, queue.Queue]]):
     """Pull tasks off the queue and run them, shipping results back via the
     caller-provided reply queue. A sentinel of None on the work queue means
     shut down (used only by tests)."""
@@ -130,7 +132,7 @@ def _worker_loop(work_queue: "queue.Queue[tuple[Callable, tuple, dict, queue.Que
             reply_queue.put(("err", e))
 
 
-def _ensure_worker() -> "queue.Queue[tuple[Callable, tuple, dict, queue.Queue]]":
+def _ensure_worker() -> queue.Queue[tuple[Callable, tuple, dict, queue.Queue]]:
     """Return the worker queue, starting the worker thread on first call."""
     global _worker_queue, _worker_thread
     if _worker_queue is not None and _worker_thread is not None and _worker_thread.is_alive():
@@ -243,7 +245,7 @@ def _mlx_load_impl(model_id: str) -> tuple[str, Any, Any]:
             raise RuntimeError(
                 "mlx-lm is not installed. Install it with:\n"
                 "    ~/.voiceclip/.venv/bin/pip install mlx-lm"
-            )
+            ) from None
 
         # Wrap the load in a GPU stream — mlx-lm places quantized weights
         # on the Metal device during load, which needs a stream attached
@@ -330,7 +332,7 @@ def _load_via_vlm(model_id: str) -> tuple[str, Any, Any]:
             "Install it with:\n"
             "    ~/.voiceclip/.venv/bin/pip install mlx-vlm\n"
             "Then restart voiceclip view."
-        )
+        ) from None
     import mlx.core as mx
     try:
         with mx.stream(mx.gpu):
@@ -420,7 +422,7 @@ def list_recommended_models(feature: str | None = None) -> list[dict]:
     if _recommended_models_cache is None:
         try:
             import json as _json
-            with open(_RECOMMENDED_MODELS_PATH, "r") as f:
+            with open(_RECOMMENDED_MODELS_PATH) as f:
                 data = _json.loads(f.read())
             models = data.get("models", [])
             if isinstance(models, list):
@@ -693,7 +695,7 @@ def _openai_client():
         raise RuntimeError(
             "The 'openai' package is not installed. Install it with:\n"
             "    ~/.voiceclip/.venv/bin/pip install openai"
-        )
+        ) from None
     # 60s transport timeout so a stalled network can't wedge the viewer
     # handler thread for the SDK default (10 min). Readable TimeoutError
     # bubbles up to our error-humanizing path.
@@ -802,7 +804,7 @@ def _anthropic_client():
         raise RuntimeError(
             "The 'anthropic' package is not installed. Install it with:\n"
             "    ~/.voiceclip/.venv/bin/pip install anthropic"
-        )
+        ) from None
     # 60s transport timeout — same rationale as _openai_client.
     return anthropic.Anthropic(api_key=api_key, timeout=60.0)
 

@@ -304,14 +304,16 @@ class TestMlxVlmBackend:
 
         behavior("model_id") should either return (model, tokenizer) or raise.
         """
-        import sys, types
+        import sys
+        import types
         fake = types.ModuleType("mlx_lm")
         fake.load = behavior
         monkeypatch.setitem(sys.modules, "mlx_lm", fake)
 
     def _stub_mlx_vlm(self, monkeypatch, behavior):
         """Install a fake mlx_vlm with a load() function."""
-        import sys, types
+        import sys
+        import types
         fake = types.ModuleType("mlx_vlm")
         fake.load = behavior
         monkeypatch.setitem(sys.modules, "mlx_vlm", fake)
@@ -663,7 +665,8 @@ class TestWorkerThread:
             seen["generate_thread"] = _t.current_thread().ident
             return kwargs.get("prompt", "") + "the answer"
 
-        import sys, types
+        import sys
+        import types
         fake_lm = types.ModuleType("mlx_lm")
         fake_lm.load = fake_lm_load
         fake_lm.generate = fake_generate

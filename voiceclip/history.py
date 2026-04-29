@@ -277,7 +277,7 @@ def save(
         if _conn is None:
             return None
         with _write_lock:
-            from voiceclip.config import PERSONA, MODEL
+            from voiceclip.config import MODEL, PERSONA
             cur = _conn.execute(
                 "INSERT INTO transcriptions "
                 "(timestamp, raw_text, formatted_text, duration_seconds, "

@@ -27,7 +27,6 @@ from pathlib import Path
 
 from voiceclip import config, history
 
-
 # ANSI helpers — plain strings if the terminal isn't a TTY
 _IS_TTY = sys.stdout.isatty()
 

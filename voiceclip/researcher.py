@@ -142,7 +142,7 @@ def research_topic(entry_id: int) -> dict | None:
         msg = _humanize_provider_error(e, provider, model_id)
         history.save_brief(entry_id, status="failed", provider=provider,
                            model=model_id, error=msg)
-        raise RuntimeError(msg)
+        raise RuntimeError(msg) from e
 
     history.save_brief(
         entry_id,

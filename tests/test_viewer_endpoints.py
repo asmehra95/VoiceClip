@@ -11,8 +11,9 @@ from datetime import datetime
 
 import pytest
 
+from tests.conftest import http_get as _get
+from tests.conftest import http_post as _post
 from voiceclip import config, history
-from tests.conftest import http_get as _get, http_post as _post
 
 
 @pytest.fixture
@@ -399,6 +400,7 @@ class TestModelsEndpoints:
         """The currently-loaded Whisper model cannot be deleted — refusal
         must come with status 409 and an actionable message."""
         from voiceclip import config as cfg
+
         # get_model_repo reads MODEL + ENGLISH_ONLY. Default is the turbo
         # model; grab that and feed it to our stub.
         from voiceclip.config import get_model_repo
@@ -482,6 +484,7 @@ class TestTimelineEndpoint:
     def test_day_payload_surfaces_cached_timeline(self, server):
         """After a timeline is saved, /api/day should return it."""
         from datetime import datetime
+
         from voiceclip import config
         today = datetime.now().strftime("%Y-%m-%d")
 

@@ -8,6 +8,7 @@ the patterns-support helpers.
 import os
 import sqlite3
 import tempfile
+
 import pytest
 
 from voiceclip import config, history
@@ -481,9 +482,8 @@ class TestArchive:
 
 class TestDbFilePermissions:
     def test_db_is_0600(self, tmp_path):
-        db_path = os.path.join(str(tmp_path), "history.db")
-        # Fixture already re-initialized the DB in tmp_path
-        # Find where it actually got created
+        # Fixture already re-initialized the DB in tmp_path.
+        # Find where it actually got created.
         import voiceclip.history as h
         actual_db = h.DB_PATH
         assert os.path.exists(actual_db)

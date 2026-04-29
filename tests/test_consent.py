@@ -9,6 +9,7 @@ The banner should fire:
 
 import json
 import os
+
 import pytest
 
 from voiceclip import config, consent
@@ -103,6 +104,7 @@ class TestConsent:
         monkeypatch.setattr(config, "SUMMARIES_OPENAI_MODEL", "gpt-4o-mini")
         consent.check_and_warn()
         p = os.path.join(config.CONFIG_DIR, "cloud_ack.json")
-        data = json.loads(open(p).read())
+        with open(p) as f:
+            data = json.loads(f.read())
         assert data["summaries"]["provider"] == "openai"
         assert data["summaries"]["model"] == "gpt-4o-mini"

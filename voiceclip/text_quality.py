@@ -27,7 +27,6 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-
 # Minimum length before any check fires. Short entries like "yes" or
 # "okay thanks" are never garbage-filtered — they might be meaningful on
 # their own.
@@ -85,10 +84,7 @@ def is_garbage_text(text: str) -> bool:
     counts = Counter(tokens)
     _, top_count = counts.most_common(1)[0]
     ratio = top_count / len(tokens)
-    if ratio >= _DOMINANT_TOKEN_RATIO:
-        return True
-
-    return False
+    return ratio >= _DOMINANT_TOKEN_RATIO
 
 
 def filter_entries(entries: list[dict]) -> list[dict]:

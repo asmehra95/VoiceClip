@@ -1,17 +1,17 @@
 """Tests for voiceclip.formatter — regex post-processing pipeline."""
 
 import pytest
-from voiceclip.formatter import (
-    format_text,
-    _strip_hallucinations,
-    _convert_spoken_punctuation,
-    _convert_spoken_formatting,
-    _fix_capitalization,
-    _clean_whitespace,
-    _apply_dictionary,
-    build_patterns,
-)
 
+from voiceclip.formatter import (
+    _apply_dictionary,
+    _clean_whitespace,
+    _convert_spoken_formatting,
+    _convert_spoken_punctuation,
+    _fix_capitalization,
+    _strip_hallucinations,
+    build_patterns,
+    format_text,
+)
 
 # ---------------------------------------------------------------------------
 # Hallucination filtering
