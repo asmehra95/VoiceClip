@@ -1887,5 +1887,66 @@
     });
   }
 
+  // ---------- Cloud-provider consent banner ----------
+  // Shown when GET /api/consent returns any `pending` features. Stays
+  // up until the user clicks "I understand, continue" — which POSTs to
+  // /api/consent/ack to record the current cloud config as the new
+  // baseline. Reappears automatically next load if the user flips
+  // another feature to cloud.
+
+  async function loadConsentBanner() {
+    const slot = $id("consent_banner_slot");
+    slot.innerHTML = "";
+    let data;
+    try {
+      const r = await fetch("/api/consent");
+      data = await r.json();
+    } catch (e) { return; }  // silent — banner is non-critical
+
+    const pending = data.pending || {};
+    const features = Object.keys(pending);
+    if (!features.length) return;
+
+    const rows = features.sort().map(f => {
+      const info = pending[f];
+      return el("div", {class: "consent-row"}, [
+        el("div", {class: "consent-feature"}, [
+          el("strong", null, f),
+          " · ",
+          el("span", {class: "consent-provider"},
+            `${info.provider} · ${info.model}`),
+        ]),
+        el("div", {class: "consent-data-sent"}, info.data_sent),
+      ]);
+    });
+
+    const dismissBtn = el("button", {
+      class: "primary",
+      onclick: async () => {
+        try {
+          await fetch("/api/consent/ack", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({}),
+          });
+        } catch (e) { /* ignore */ }
+        slot.innerHTML = "";
+      },
+    }, "I understand, continue");
+
+    const banner = el("div", {class: "consent-banner"}, [
+      el("div", {class: "consent-header"}, [
+        el("strong", null, "⚠️ Cloud provider change detected"),
+      ]),
+      el("div", {class: "consent-body"}, rows),
+      el("div", {class: "consent-note"},
+        "When these features run, data leaves your Mac. Providers typically retain API data for ~30 days. " +
+        "Flip the provider back to \"none\" in Settings if unintended."),
+      el("div", {class: "consent-actions"}, dismissBtn),
+    ]);
+    slot.appendChild(banner);
+  }
+
   load(state.date);
+  loadConsentBanner();
 })();

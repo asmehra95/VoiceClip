@@ -108,3 +108,46 @@ class TestConsent:
             data = json.loads(f.read())
         assert data["summaries"]["provider"] == "openai"
         assert data["summaries"]["model"] == "gpt-4o-mini"
+
+
+class TestPendingAcks:
+    """Non-mutating read for the viewer's in-UI banner."""
+
+    def test_empty_when_all_none(self):
+        assert consent.pending_acks() == {}
+
+    def test_returns_feature_when_unacked(self, monkeypatch):
+        monkeypatch.setattr(config, "SUMMARIES_PROVIDER", "openai")
+        monkeypatch.setattr(config, "SUMMARIES_OPENAI_MODEL", "gpt-4o-mini")
+        pending = consent.pending_acks()
+        assert "summaries" in pending
+        assert pending["summaries"]["provider"] == "openai"
+        assert pending["summaries"]["model"] == "gpt-4o-mini"
+
+    def test_does_not_mutate_ack_file(self, monkeypatch):
+        """pending_acks is read-only — viewer must be able to check
+        repeatedly without auto-dismissing the banner."""
+        monkeypatch.setattr(config, "SUMMARIES_PROVIDER", "openai")
+        monkeypatch.setattr(config, "SUMMARIES_OPENAI_MODEL", "gpt-4o-mini")
+        consent.pending_acks()
+        # Second call should still see the same pending entry
+        pending = consent.pending_acks()
+        assert "summaries" in pending
+
+    def test_empty_after_record_acks(self, monkeypatch):
+        monkeypatch.setattr(config, "SUMMARIES_PROVIDER", "openai")
+        monkeypatch.setattr(config, "SUMMARIES_OPENAI_MODEL", "gpt-4o-mini")
+        assert "summaries" in consent.pending_acks()
+        consent.record_acks()
+        assert consent.pending_acks() == {}
+
+    def test_record_acks_can_target_single_feature(self, monkeypatch):
+        monkeypatch.setattr(config, "SUMMARIES_PROVIDER", "openai")
+        monkeypatch.setattr(config, "SUMMARIES_OPENAI_MODEL", "gpt-4o-mini")
+        monkeypatch.setattr(config, "RESEARCH_PROVIDER", "anthropic")
+        monkeypatch.setattr(config, "RESEARCH_ANTHROPIC_MODEL", "claude-haiku-4-5")
+        # Ack only summaries; research stays pending
+        consent.record_acks(features=["summaries"])
+        pending = consent.pending_acks()
+        assert "summaries" not in pending
+        assert "research" in pending

@@ -552,3 +552,52 @@ class TestDictationModelSetting:
                         {"model": "bogus-3000"})
         assert code == 400
         assert "must be one of" in r["error"]
+
+
+class TestConsentEndpoint:
+    """/api/consent returns pending cloud-provider flips; /api/consent/ack
+    records them. Together they replace the auto-ack-on-startup behavior
+    that made the banner invisible to viewer-only users."""
+
+    def test_consent_empty_when_all_none(self, server):
+        data = _get(server + "/api/consent")
+        assert data == {"pending": {}}
+
+    def test_consent_surfaces_pending_cloud_flip(self, server, monkeypatch):
+        monkeypatch.setattr(config, "SUMMARIES_PROVIDER", "openai")
+        monkeypatch.setattr(config, "SUMMARIES_OPENAI_MODEL", "gpt-4o-mini")
+        data = _get(server + "/api/consent")
+        assert "summaries" in data["pending"]
+        s = data["pending"]["summaries"]
+        assert s["provider"] == "openai"
+        assert s["model"] == "gpt-4o-mini"
+        # data_sent copy comes from the same FEATURE_DATA_SENT map as the
+        # CLI banner — viewer and CLI read consistent.
+        assert s["data_sent"]
+        assert "entries" in s["data_sent"].lower()
+
+    def test_ack_clears_pending(self, server, monkeypatch):
+        monkeypatch.setattr(config, "SUMMARIES_PROVIDER", "openai")
+        monkeypatch.setattr(config, "SUMMARIES_OPENAI_MODEL", "gpt-4o-mini")
+        assert "summaries" in _get(server + "/api/consent")["pending"]
+        code, r = _post(server + "/api/consent/ack", {})
+        assert code == 200
+        assert r == {"ok": True}
+        assert _get(server + "/api/consent")["pending"] == {}
+
+    def test_ack_can_target_single_feature(self, server, monkeypatch):
+        monkeypatch.setattr(config, "SUMMARIES_PROVIDER", "openai")
+        monkeypatch.setattr(config, "SUMMARIES_OPENAI_MODEL", "gpt-4o-mini")
+        monkeypatch.setattr(config, "RESEARCH_PROVIDER", "anthropic")
+        monkeypatch.setattr(config, "RESEARCH_ANTHROPIC_MODEL", "claude-haiku-4-5")
+        code, r = _post(server + "/api/consent/ack", {"features": ["summaries"]})
+        assert code == 200
+        pending = _get(server + "/api/consent")["pending"]
+        assert "summaries" not in pending
+        assert "research" in pending
+
+    def test_ack_rejects_non_list_features(self, server, monkeypatch):
+        monkeypatch.setattr(config, "SUMMARIES_PROVIDER", "openai")
+        monkeypatch.setattr(config, "SUMMARIES_OPENAI_MODEL", "gpt-4o-mini")
+        code, r = _post(server + "/api/consent/ack", {"features": "summaries"})
+        assert code == 400

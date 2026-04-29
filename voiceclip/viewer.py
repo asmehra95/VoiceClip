@@ -711,6 +711,26 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"days": history.list_days(limit=180)})
             return
 
+        if path == "/api/consent":
+            # Cloud-provider consent state. Returns:
+            #   {
+            #     "pending": { "summaries": {provider, model, data_sent}, ... }
+            #   }
+            # If `pending` is empty, no banner shows. Otherwise the
+            # frontend renders a dismissible consent banner with
+            # provider+model and the data-sent description.
+            from voiceclip.consent import FEATURE_DATA_SENT, pending_acks
+            pend = pending_acks()
+            out = {
+                feature: {
+                    **info,
+                    "data_sent": FEATURE_DATA_SENT.get(feature, ""),
+                }
+                for feature, info in pend.items()
+            }
+            self._json({"pending": out})
+            return
+
         if path == "/api/day":
             date = (q.get("date") or [datetime.now().strftime("%Y-%m-%d")])[0]
             try:
@@ -829,6 +849,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "not found or already a reflection"}, status=404)
             else:
                 self._json({"ok": True, "entry": result})
+            return
+
+        if path == "/api/consent/ack":
+            # User dismissed the in-UI cloud consent banner. Records the
+            # current cloud config state so the banner doesn't reappear
+            # on next viewer load. `features` optional — omit to ack all
+            # pending; pass a list to ack a specific subset.
+            features = payload.get("features")
+            if features is not None and not isinstance(features, list):
+                self._json({"error": "features must be a list or omitted"}, status=400)
+                return
+            from voiceclip.consent import record_acks
+            record_acks(features=features)
+            self._json({"ok": True})
             return
 
         if path == "/api/delete":
@@ -1128,11 +1162,24 @@ def serve(host: str = "127.0.0.1", port: int = 8723, open_browser: bool = True):
     """Start the viewer HTTP server. Blocks until Ctrl+C.
 
     Always binds to localhost only — never exposes your history over the network.
+
+    Cloud-provider consent is NOT auto-acked on viewer startup anymore.
+    Instead, /api/consent surfaces any unacked cloud features, the frontend
+    renders a visible banner above the tabs, and the user dismisses it
+    through POST /api/consent/ack. This closes the "user only uses the
+    viewer, never sees the CLI banner" gap.
     """
     history.init()
-    # Surface cloud-provider changes before the user starts clicking
-    from voiceclip.consent import check_and_warn as _cloud_check
-    _cloud_check()
+    # Log the pending state at startup so logs still capture it, but do
+    # NOT auto-ack — that's now a user action in the UI.
+    from voiceclip.consent import pending_acks
+    pending = pending_acks()
+    if pending:
+        log.info(
+            "Cloud provider acknowledgment pending for: %s. "
+            "Banner will appear in the viewer UI.",
+            ", ".join(sorted(pending.keys())),
+        )
     server = ThreadingHTTPServer((host, port), Handler)
     url = f"http://{host}:{port}"
     print(f"\n  🌐 VoiceClip viewer running at {url}")

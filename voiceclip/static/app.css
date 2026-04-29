@@ -1255,3 +1255,62 @@ details.summary-details .body {
   font-size: 15px;
   white-space: pre-wrap;
 }
+
+
+/* Cloud-provider consent banner — shown at the top of the page when
+   /api/consent reports unacked features. Higher visual weight than
+   the restart-banner because this one carries real privacy semantics. */
+.consent-banner {
+  background: var(--reflection-bg);
+  border: 1px solid var(--reflection-border);
+  border-left: 4px solid #d0603a;
+  color: var(--text);
+  padding: 16px 20px;
+  border-radius: 10px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.consent-header {
+  font-size: 14px;
+  margin-bottom: 10px;
+}
+.consent-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.consent-row {
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+.consent-feature {
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+.consent-provider { color: var(--muted); }
+.consent-data-sent {
+  color: var(--muted);
+  font-size: 12px;
+}
+.consent-note {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+.consent-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.consent-actions button.primary {
+  background: var(--accent);
+  color: white;
+  border: 1px solid var(--accent);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.consent-actions button.primary:hover { opacity: 0.92; }

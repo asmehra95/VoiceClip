@@ -18,6 +18,12 @@
     </div>
   </header>
 
+  <!-- Cloud-provider consent banner. Hidden until /api/consent reports
+       pending features. Rendered above the tabs so it's unmissable.
+       Dismissing POSTs to /api/consent/ack and records the current
+       cloud config as the new baseline. -->
+  <div id="consent_banner_slot"></div>
+
   <div class="tabs">
     <button class="tab active" data-view="journal">📓 Journal</button>
     <button class="tab" data-view="queue">📚 Queue</button>

@@ -79,8 +79,10 @@ def _current_cloud_state() -> dict:
 
 
 # Messaging text — kept in one place so it reads consistently wherever it
-# fires (CLI startup banner, viewer startup log).
-_FEATURE_DATA_SENT = {
+# fires (CLI startup banner, viewer startup log, viewer in-UI banner).
+# Exposed without an underscore so the viewer API can return the same
+# copy the CLI banner uses.
+FEATURE_DATA_SENT = {
     "summaries": (
         "Your entries for the target day (every transcription and reflection "
         "in that day's window)"
@@ -104,7 +106,7 @@ def _banner(new_features: dict) -> str:
     ]
     for feature, info in sorted(new_features.items()):
         lines.append(f"  │  {feature:<10}  →  {info['provider']} · {info['model']}")
-        lines.append(f"  │              {_FEATURE_DATA_SENT.get(feature, '?')}")
+        lines.append(f"  │              {FEATURE_DATA_SENT.get(feature, '?')}")
     lines.extend([
         "  │",
         "  │  When these features run, data leaves your Mac and goes to",
@@ -117,6 +119,47 @@ def _banner(new_features: dict) -> str:
         "",
     ])
     return "\n".join(lines)
+
+
+def pending_acks() -> dict:
+    """Return features whose current cloud config hasn't yet been acked.
+
+    Pure read — does NOT mutate the ack file. Lets the viewer show a
+    visible banner before auto-acking. The startup `check_and_warn()`
+    auto-acks as a side effect of printing, which is fine for the CLI
+    but invisible in the web UI.
+
+    Shape matches `_current_cloud_state()` but only includes entries
+    that differ from the stored ack file.
+    """
+    current = _current_cloud_state()
+    if not current:
+        return {}
+    acks = _load_acks()
+    pending = {}
+    for feature, info in current.items():
+        if acks.get(feature) != info:
+            pending[feature] = info
+    return pending
+
+
+def record_acks(features: list[str] | None = None) -> dict:
+    """Persist acks for the given features (or all pending if omitted).
+
+    Returns the updated ack dict. Idempotent — safe to call multiple
+    times. Used by the viewer's /api/consent/ack endpoint after the user
+    dismisses the in-UI banner.
+    """
+    current = _current_cloud_state()
+    acks = _load_acks()
+    to_record = (
+        {k: v for k, v in current.items() if features is None or k in features}
+    )
+    if not to_record:
+        return acks
+    acks.update(to_record)
+    _save_acks(acks)
+    return acks
 
 
 def check_and_warn() -> str | None:
