@@ -333,6 +333,32 @@ def _run_voiceclip():
         print("  ⚠️  Accessibility not granted — auto-paste disabled")
         print("     Transcriptions will still be copied to clipboard")
 
+    # Best-effort workaround for a pyobjc lazy-import bug on Python 3.14
+    # that makes `HIServices.AXIsProcessTrusted` raise KeyError when
+    # pynput's listener thread tries to read it. Symptom: "Exception in
+    # thread Thread-N" traceback during listener startup, then the
+    # listener is dead and hotkeys do nothing.
+    #
+    # Touching HIServices here on the main thread does two things:
+    #   (a) If the lazy import succeeds, the function object gets bound
+    #       into the HIServices module namespace, so pynput's later
+    #       access goes through the normal attribute lookup (not the
+    #       broken lazy path) and doesn't crash.
+    #   (b) If it fails HERE too — same bug in main thread — we at
+    #       least log a debug line about it and proceed. The listener
+    #       will still crash; _validate_hotkey_listener will spot the
+    #       non-running listener and point the user at the logs.
+    #
+    # Known-good combos: pyobjc 12.x on Python 3.12. Known-bad: pyobjc
+    # 12.1 on Python 3.14 (funcmap.pop KeyError). If you're on 3.14
+    # and hitting this, consider falling back to 3.12 until pyobjc ships
+    # a fix.
+    try:
+        import HIServices  # type: ignore[import-not-found]
+        HIServices.AXIsProcessTrusted()
+    except Exception as e:
+        log.debug("pyobjc HIServices warmup skipped: %s", e)
+
     build_patterns()
     cleanup_stale_temps()
 
@@ -448,10 +474,28 @@ def _validate_hotkey_listener(handler, label: str):
     a no-op even though `.running` is True.
 
     We give the listener 500ms to initialize on its CFRunLoop thread
-    before checking. False negatives (check runs before _run() sets the
-    flag) just log at info; users who see no warning but still have
-    broken hotkeys are directed at `voiceclip doctor` from the other
-    error paths.
+    before checking.
+
+    Three distinct failure modes, worth distinguishing because the fix
+    for each is different:
+
+      a) Listener object missing         -> pynput constructor failed
+      b) Listener not running             -> _run() thread crashed before
+                                             or during AXIsProcessTrusted
+                                             check (library compat bug,
+                                             not a permission issue)
+      c) Listener running, IS_TRUSTED=False -> Accessibility is actually
+                                               denied
+
+    The (b) case matters: if the listener thread died (e.g. pyobjc's
+    lazy-import raised KeyError on Python 3.14), IS_TRUSTED stays at
+    its class-level default of False — which the old check misread as
+    "permission denied" and shouted a misleading Accessibility error.
+    Dictation might still work through a different code path (the child
+    recorder process), which is maximally confusing for the user.
+
+    Check `.running` BEFORE `IS_TRUSTED` so we don't diagnose a crashed
+    listener as a permission problem.
     """
     log = logging.getLogger("voiceclip")
     listener = getattr(handler, "_listener", None)
@@ -464,6 +508,19 @@ def _validate_hotkey_listener(handler, label: str):
 
     time.sleep(0.5)  # let _run() set IS_TRUSTED on the listener thread
 
+    # Case (b): listener thread crashed or never started.
+    if not getattr(listener, "running", False):
+        log.warning(
+            "Hotkey %s listener is not running after startup. "
+            "This usually means a library crashed during pynput init "
+            "(check stderr for a Thread traceback above). "
+            "Dictation may still work if it recovers on first key press. "
+            "Run `voiceclip doctor` if the hotkey never responds.",
+            label,
+        )
+        return
+
+    # Case (c): listener is healthy, IS_TRUSTED is the trustworthy signal.
     is_trusted = getattr(listener, "IS_TRUSTED", None)
     if is_trusted is False:
         log.error(
@@ -471,15 +528,6 @@ def _validate_hotkey_listener(handler, label: str):
             "Key presses will be ignored until you grant it. "
             "System Settings → Privacy & Security → Accessibility → add your terminal. "
             "Then restart VoiceClip. Run `voiceclip doctor` to verify.",
-            label,
-        )
-        return
-
-    if not getattr(listener, "running", False):
-        log.warning(
-            "Hotkey %s listener stopped unexpectedly after start. "
-            "Another app may have grabbed the key, or Input Monitoring was revoked. "
-            "Run `voiceclip doctor` to diagnose.",
             label,
         )
 
