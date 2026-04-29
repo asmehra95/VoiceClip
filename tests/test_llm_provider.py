@@ -692,3 +692,69 @@ class TestWorkerThread:
         assert seen["generate_thread"] != caller_thread
         # And they ran on the SAME thread — that's the whole point
         assert seen["load_thread"] == seen["generate_thread"]
+
+
+class TestGgufDetection:
+    """GGUF-format repos (llama.cpp native) can't load in MLX. Users
+    routinely confuse them with MLX-compatible repos because both live
+    on HuggingFace. We want a readable error, not a raw FileNotFoundError."""
+
+    def test_gguf_error_names_the_format(self):
+        err = FileNotFoundError(
+            "No safetensors found in /Users/v/.cache/huggingface/hub/"
+            "models--Jackrong--Qwen3.5-9B-GGUF/snapshots/abc"
+        )
+        msg = str(llm_provider._classify_mlx_load_error(
+            "Jackrong/Qwen3.5-9B-GGUF", err,
+        ))
+        assert "GGUF" in msg
+        assert "llama.cpp" in msg.lower()
+
+    def test_gguf_error_points_at_mlx_community(self):
+        """The recovery hint should actually help — point at the picker
+        or mlx-community namespace, not just 'try a different model'."""
+        err = FileNotFoundError("No safetensors found anywhere")
+        msg = str(llm_provider._classify_mlx_load_error(
+            "Some/Model-GGUF", err,
+        ))
+        assert "mlx-community" in msg.lower() or "quick pick" in msg.lower()
+
+    def test_lowercase_gguf_suffix_also_detected(self):
+        """Repo names use -GGUF or .gguf in practice; detection is
+        case-insensitive."""
+        err = FileNotFoundError("no safetensors")
+        msg = str(llm_provider._classify_mlx_load_error(
+            "author/some-model.gguf", err,
+        ))
+        assert "GGUF" in msg
+
+    def test_non_gguf_safetensors_missing_gives_different_hint(self):
+        """A safetensors-missing error on a non-GGUF repo is a different
+        problem (interrupted download, typically). Don't misdiagnose."""
+        err = FileNotFoundError(
+            "No safetensors found in /some/mlx-community/Qwen-4bit"
+        )
+        msg = str(llm_provider._classify_mlx_load_error(
+            "mlx-community/Qwen2.5-7B-Instruct-4bit", err,
+        ))
+        # Not the GGUF hint — falls through to the generic truncated-
+        # error branch because the repo id doesn't signal GGUF.
+        assert "GGUF" not in msg
+        assert "Could not load local model" in msg
+
+    def test_is_gguf_model_requires_both_signals(self):
+        """Both the error AND the repo name have to signal GGUF — either
+        alone is too weak to classify."""
+        # Repo says GGUF, error doesn't mention safetensors — ambiguous
+        assert not llm_provider._is_gguf_model(
+            "author/model-GGUF", "some unrelated error",
+        )
+        # Error says safetensors, repo doesn't say GGUF — could be a
+        # legit MLX-repo download interruption
+        assert not llm_provider._is_gguf_model(
+            "mlx-community/Qwen-4bit", "No safetensors found",
+        )
+        # Both signals present — confident GGUF
+        assert llm_provider._is_gguf_model(
+            "author/model-GGUF", "No safetensors found",
+        )

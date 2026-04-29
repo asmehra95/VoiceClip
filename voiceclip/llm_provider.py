@@ -299,10 +299,20 @@ def _mlx_load_impl(model_id: str) -> tuple[str, Any, Any]:
                 return _load_via_vlm(model_id)
             raise _classify_mlx_load_error(model_id, e) from e
         except Exception as e:
-            raise RuntimeError(
-                f"Could not load local model '{model_id}': "
-                f"{type(e).__name__}: {str(e)[:300]}"
-            ) from e
+            raise _classify_mlx_load_error(model_id, e) from e
+
+
+def _is_gguf_model(model_id: str, err_msg: str) -> bool:
+    """Detect if the user tried to load a GGUF-format repo.
+
+    GGUF is llama.cpp's native format — incompatible with MLX. Two
+    signals together are sufficient: the error mentions safetensors
+    being absent, AND the repo id contains 'gguf' (case-insensitive,
+    covers both '-GGUF' and '.gguf' style names).
+    """
+    low_err = err_msg.lower()
+    low_id = model_id.lower()
+    return "safetensors" in low_err and "gguf" in low_id
 
 
 def _load_via_vlm(model_id: str) -> tuple[str, Any, Any]:
@@ -335,21 +345,42 @@ def _load_via_vlm(model_id: str) -> tuple[str, Any, Any]:
 
 
 def _classify_mlx_load_error(model_id: str, err: Exception) -> RuntimeError:
-    """Map mlx-lm weight-loading errors to readable hints.
+    """Map MLX weight-loading failures to readable hints.
 
-    Called only on ValueErrors that weren't the multimodal signature
-    (which has its own fallback path).
+    Covers:
+      - GGUF-format repos (llama.cpp / Ollama native format, not MLX)
+      - Missing / interrupted safetensors downloads
+      - Generic fall-through with the model id + short reason
+
+    Called from _mlx_load on any exception that wasn't routed to the
+    multimodal-fallback path.
     """
     msg = str(err)
     low = msg.lower()
+
+    # GGUF-format repo: llama.cpp's binary format, not MLX's safetensors.
+    # mlx-lm has no converter — the user needs a different checkpoint.
+    if _is_gguf_model(model_id, msg):
+        return RuntimeError(
+            f"'{model_id}' is a GGUF-format model. GGUF is llama.cpp's "
+            "native format and can't be loaded by mlx-lm or mlx-vlm. "
+            "Pick a repo with -mlx, -MLX, or -4bit in the name instead. "
+            "The 'Quick pick' dropdown in Settings lists known-good "
+            "MLX models, or browse https://huggingface.co/mlx-community."
+        )
+
     if "missing parameters" in low or ("not found" in low and "weight" in low):
         return RuntimeError(
             f"'{model_id}' appears to be missing weight files. The download "
             "may have been interrupted. Try clearing it from the "
             "\"Downloaded models\" panel in Settings and loading again."
         )
+
+    # Generic fallback: truncate so the viewer doesn't render a multi-KB
+    # traceback into the UI.
     return RuntimeError(
-        f"Could not load local model '{model_id}': {msg[:400]}"
+        f"Could not load local model '{model_id}': "
+        f"{type(err).__name__}: {msg[:300]}"
     )
 
 
