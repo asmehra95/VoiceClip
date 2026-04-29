@@ -545,3 +545,49 @@ class TestTimelineEndpoint:
             assert data["timeline"]["model"] == "gpt-4o-mini"
         finally:
             config.SUMMARIES_PROVIDER = saved
+
+
+class TestDictationModelSetting:
+    """The Whisper model selection lives in the Settings tab's Dictation
+    group. Picker dropdown, restart-required, and validation all wired
+    against the existing settings schema infrastructure."""
+
+    def test_schema_exposes_model_field(self, server):
+        data = _get(server + "/api/settings")
+        schema = data["schema"]
+        assert "model" in schema
+        assert schema["model"]["group"] == "Dictation"
+        assert schema["model"]["type"] == "select"
+        assert schema["model"]["restart_required"] is True
+
+    def test_choices_match_valid_models(self, server):
+        """The Settings dropdown must list every model that config.validate()
+        would accept. Keeps the UI in sync with the runtime constraint."""
+        from voiceclip import config as cfg
+        data = _get(server + "/api/settings")
+        choices = data["schema"]["model"]["choices"]
+        # Every dropdown choice must be a real VALID_MODELS entry
+        for c in choices:
+            assert c in cfg.VALID_MODELS, f"dropdown has invalid model: {c}"
+        # And no valid model missing from the UI
+        for m in cfg.VALID_MODELS:
+            assert m in choices, f"valid model missing from UI: {m}"
+
+    def test_current_model_surfaced_as_value(self, server):
+        from voiceclip import config as cfg
+        data = _get(server + "/api/settings")
+        assert data["values"]["model"] == cfg.MODEL
+
+    def test_update_accepts_valid_model(self, server):
+        code, r = _post(f"{server}/api/settings/update",
+                        {"model": "small"})
+        assert code == 200
+        # Restart-required flag should bubble up in the response so the
+        # UI knows to show the banner.
+        assert r.get("restart_required") is True
+
+    def test_update_rejects_unknown_model(self, server):
+        code, r = _post(f"{server}/api/settings/update",
+                        {"model": "bogus-3000"})
+        assert code == 400
+        assert "must be one of" in r["error"]

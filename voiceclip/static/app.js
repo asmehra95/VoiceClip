@@ -1300,6 +1300,7 @@
 
   // Plain-language labels and descriptions. Keyed by dotted config key.
   const SETTING_COPY = {
+    "model":                   ["Whisper model", "Larger models are more accurate but slower. Turbo is the sweet spot on Apple Silicon. Tiny / base are fast; large-v3 is highest quality."],
     "hotkey":                  ["Hotkey", "Key to hold/press for dictation"],
     "hotkey_mode":             ["Hotkey mode", "Hold to record, or tap to toggle"],
     "english_only":            ["English only", "Faster and smaller if all your dictation is English"],

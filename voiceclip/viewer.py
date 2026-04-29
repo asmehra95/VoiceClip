@@ -132,6 +132,16 @@ def _day_payload(date_str: str, include_summary: bool = True) -> dict:
 
 _SETTINGS_SCHEMA: dict[str, dict] = {
     # Dictation
+    "model": {
+        "group": "Dictation",
+        "type": "select",
+        "restart_required": True,
+        # Mirrors config.VALID_MODELS — keep in sync if that list changes.
+        # `large-v3-turbo` is the default and best speed/quality balance on
+        # Apple Silicon; tiny/base are speed-first, large-v3 is quality-first.
+        "choices": ["tiny", "base", "small", "medium",
+                    "large-v3-turbo", "large-v3"],
+    },
     "hotkey": {
         "group": "Dictation",
         "type": "select",
@@ -288,6 +298,7 @@ def _get_nested(d: dict, key: str):
 def _runtime_value(key: str):
     """Read the current runtime value for a dotted config key."""
     mapping = {
+        "model": config.MODEL,
         "hotkey": config.HOTKEY,
         "hotkey_mode": config.HOTKEY_MODE,
         "english_only": config.ENGLISH_ONLY,
