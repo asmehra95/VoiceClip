@@ -1,0 +1,21 @@
+{
+    "_comment": "JS type-checking config for the viewer frontend. Zero build step — VS Code and tsc --noEmit read this file to flag type issues in app.js via JSDoc. Paired with '// @ts-check' at the top of app.js.",
+    "compilerOptions": {
+        "target": "es2020",
+        "module": "esnext",
+        "moduleResolution": "bundler",
+        "checkJs": true,
+        "allowJs": true,
+        "noEmit": true,
+        "strict": false,
+        "noImplicitAny": false,
+        "lib": [
+            "es2020",
+            "dom",
+            "dom.iterable"
+        ]
+    },
+    "include": [
+        "app.js"
+    ]
+}

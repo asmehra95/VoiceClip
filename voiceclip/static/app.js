@@ -1,4 +1,45 @@
+// @ts-check
+/**
+ * VoiceClip viewer frontend. All UI logic lives here — data shape comes
+ * from voiceclip/viewer.py's JSON endpoints.
+ *
+ * Type-checked via `tsc --noEmit --project jsconfig.json`. Editors with
+ * TypeScript support (VS Code, etc.) surface problems inline. The checker
+ * is lenient (strict: false, noImplicitAny: false) — we catch "you called
+ * .value on a plain HTMLElement" class mistakes without forcing full
+ * annotation coverage.
+ *
+ * Common idioms:
+ *   - $id(...) is a typed getElementById that throws on missing ids, so
+ *     downstream code can treat the result as HTMLInputElement etc.
+ *   - renderMarkdown and parseInline build Text/Element nodes only,
+ *     never assigning innerHTML to LLM output (XSS defense).
+ *   - _t properties stashed on DOM nodes hold setTimeout IDs for
+ *     debouncing; typed via the TimedEl typedef so the checker accepts.
+ */
+
+/** @typedef {HTMLElement & { _t?: number }} TimedEl */
+
 (function(){
+  /**
+   * Typed getElementById. Throws on missing ids — every call site
+   * depends on a DOM node the static HTML shell guarantees, so a
+   * missing id means someone edited the HTML without updating JS.
+   * @param {string} id
+   * @returns {HTMLElement}
+   */
+  function $id(id) {
+    const n = document.getElementById(id);
+    if (!n) throw new Error(`expected #${id} in DOM`);
+    return n;
+  }
+
+  /** @param {string} id @returns {HTMLInputElement} */
+  function $input(id) { return /** @type {HTMLInputElement} */ ($id(id)); }
+
+  /** @param {string} id @returns {HTMLButtonElement} */
+  function $button(id) { return /** @type {HTMLButtonElement} */ ($id(id)); }
+
   const state = { date: todayStr(), view: "journal" };
 
   function todayStr() {
@@ -20,7 +61,10 @@
       const today = new Date();
       today.setHours(0,0,0,0);
       const dd = new Date(d); dd.setHours(0,0,0,0);
-      const diffDays = Math.round((today - dd) / 86400000);
+      // .getTime() on both sides so TS sees a numeric subtraction; the
+      // Date coercion in `(today - dd)` works at runtime but the checker
+      // rightly flags it.
+      const diffDays = Math.round((today.getTime() - dd.getTime()) / 86400000);
       if (diffDays === 0) return "today";
       if (diffDays === 1) return "yesterday";
       if (diffDays < 7) return d.toLocaleDateString([], { weekday: "long" }).toLowerCase();
@@ -117,25 +161,26 @@
 
   // ---------- Tab switching ----------
   document.querySelectorAll(".tab").forEach(tab => {
-    tab.addEventListener("click", () => switchTab(tab.dataset.view));
+    const t = /** @type {HTMLElement} */ (tab);
+    tab.addEventListener("click", () => switchTab(t.dataset.view));
   });
 
   function switchTab(view) {
     state.view = view;
     document.querySelectorAll(".tab").forEach(t => {
-      t.classList.toggle("active", t.dataset.view === view);
+      t.classList.toggle("active", /** @type {HTMLElement} */ (t).dataset.view === view);
     });
-    document.getElementById("journal_view").style.display = view === "journal" ? "" : "none";
-    document.getElementById("queue_view").style.display = view === "queue" ? "" : "none";
-    document.getElementById("patterns_view").style.display = view === "patterns" ? "" : "none";
-    document.getElementById("settings_view").style.display = view === "settings" ? "" : "none";
-    document.getElementById("journal_nav").style.visibility = view === "journal" ? "" : "hidden";
+    $id("journal_view").style.display = view === "journal" ? "" : "none";
+    $id("queue_view").style.display = view === "queue" ? "" : "none";
+    $id("patterns_view").style.display = view === "patterns" ? "" : "none";
+    $id("settings_view").style.display = view === "settings" ? "" : "none";
+    $id("journal_nav").style.visibility = view === "journal" ? "" : "hidden";
     // Clear stale search on tab-switch
     if (view !== "journal") {
-      const si = document.getElementById("search_input");
-      const sc = document.getElementById("search_clear");
-      if (si) si.value = "";
-      if (sc) sc.style.display = "none";
+      const si = $input("search_input");
+      const sc = $id("search_clear");
+      si.value = "";
+      sc.style.display = "none";
     }
     if (view === "queue") loadQueue();
     else if (view === "patterns") loadPatterns();
@@ -146,28 +191,29 @@
   // ---------- Journal (existing) ----------
   async function load(date) {
     state.date = date;
-    document.getElementById("datepicker").value = date;
+    $input("datepicker").value = date;
     const r = await fetch(`/api/day?date=${date}`);
     const data = await r.json();
     render(data);
   }
 
   function render(data) {
-    document.getElementById("daylabel").textContent = data.day_label;
+    $id("daylabel").textContent = data.day_label;
     const s = data.stats;
-    document.getElementById("stats").textContent =
+    $id("stats").textContent =
       `${s.transcriptions} transcription${s.transcriptions===1?"":"s"} · ${s.reflections} reflection${s.reflections===1?"":"s"}`;
 
-    document.getElementById("prev").disabled = !data.prev_day;
-    document.getElementById("prev").onclick = () => data.prev_day && load(data.prev_day);
-    document.getElementById("next").disabled = !data.next_day;
-    document.getElementById("next").onclick = () => data.next_day && load(data.next_day);
-    document.getElementById("today").onclick = () => load(todayStr());
-    document.getElementById("datepicker").onchange = (e) => {
-      if (e.target.value) load(e.target.value);
+    $button("prev").disabled = !data.prev_day;
+    $button("prev").onclick = () => data.prev_day && load(data.prev_day);
+    $button("next").disabled = !data.next_day;
+    $button("next").onclick = () => data.next_day && load(data.next_day);
+    $button("today").onclick = () => load(todayStr());
+    $input("datepicker").onchange = (e) => {
+      const t = /** @type {HTMLInputElement} */ (e.target);
+      if (t.value) load(t.value);
     };
 
-    const summarySlot = document.getElementById("summary_slot");
+    const summarySlot = $id("summary_slot");
     summarySlot.innerHTML = "";
     if (data.entries.length > 0) {
       if (data.summary_enabled) {
@@ -348,7 +394,9 @@
   function wireContentEditableKeybinds(node, getOriginal) {
     node.addEventListener("paste", (ev) => {
       ev.preventDefault();
-      const text = (ev.clipboardData || window.clipboardData).getData("text/plain");
+      /** @type {any} */
+      const win = window;  // window.clipboardData is a legacy IE-only fallback
+      const text = (ev.clipboardData || win.clipboardData).getData("text/plain");
       document.execCommand("insertText", false, text);
     });
     node.addEventListener("keydown", (ev) => {
@@ -1050,7 +1098,7 @@
   });
 
   async function addTopic() {
-    const input = document.getElementById("topic_input");
+    const input = $input("topic_input");
     const text = input.value.trim();
     if (!text) return;
     try {
@@ -1223,8 +1271,8 @@
   // ---------- Search (journal tab, spans all days) ----------
 
   let _searchSeq = 0;
-  const searchInput = document.getElementById("search_input");
-  const searchClear = document.getElementById("search_clear");
+  const searchInput = $input("search_input");
+  const searchClear = $id("search_clear");
 
   searchInput.addEventListener("input", debounceSearch);
   searchClear.addEventListener("click", () => {
@@ -1247,8 +1295,12 @@
     const term = searchInput.value.trim();
     searchClear.style.display = term ? "" : "none";
     const mySeq = ++_searchSeq;
-    clearTimeout(debounceSearch._t);
-    debounceSearch._t = setTimeout(() => {
+    // setTimeout id stashed on the function object for the same reason as
+    // the inp._t idiom — debounce state has to live somewhere stable.
+    /** @type {any} */
+    const ds = debounceSearch;
+    clearTimeout(ds._t);
+    ds._t = setTimeout(() => {
       if (mySeq !== _searchSeq) return;   // superseded
       if (!term) { load(state.date); return; }
       runSearch(term, mySeq);
@@ -1267,20 +1319,20 @@
   function renderSearchResults(term, entries) {
     // Reuse the existing slots: blank the day-specific sections and replace
     // the entries list. The search header replaces the day label's stats line.
-    document.getElementById("daylabel").textContent = `Results for "${term}"`;
-    document.getElementById("stats").textContent =
+    $id("daylabel").textContent = `Results for "${term}"`;
+    $id("stats").textContent =
       `${entries.length} match${entries.length === 1 ? "" : "es"}`;
-    document.getElementById("summary_slot").innerHTML = "";
-    document.getElementById("apps_slot").innerHTML = "";
+    $id("summary_slot").innerHTML = "";
+    $id("apps_slot").innerHTML = "";
     // Nav buttons — disable during search
-    document.getElementById("prev").disabled = true;
-    document.getElementById("next").disabled = true;
-    document.getElementById("today").onclick = () => {
+    $button("prev").disabled = true;
+    $button("next").disabled = true;
+    $button("today").onclick = () => {
       searchInput.value = ""; searchClear.style.display = "none";
       load(todayStr());
     };
 
-    const slot = document.getElementById("entries_slot");
+    const slot = $id("entries_slot");
     slot.innerHTML = "";
     if (!entries.length) {
       slot.appendChild(el("div", {class:"empty"}, "No matches."));
@@ -1483,7 +1535,7 @@
       return ta;
     }
     // text
-    const inp = document.createElement("input");
+    const inp = /** @type {HTMLInputElement & { _t?: number }} */ (document.createElement("input"));
     inp.type = "text";
     inp.value = value ? String(value) : "";
     if (schema.placeholder) inp.placeholder = schema.placeholder;
@@ -1516,6 +1568,10 @@
   // Rendered immediately with a loading placeholder; options swap in when
   // the fetch resolves. If the fetch fails we quietly hide the dropdown
   // rather than showing an error — manual text input still works.
+  /**
+   * @param {string} key
+   * @param {HTMLInputElement & { _t?: number }} targetInput
+   */
   function buildRecommendedPicker(key, targetInput) {
     const feature = key.split(".")[0];  // summaries.local_model -> summaries
     const wrapper = document.createElement("div");
@@ -1590,7 +1646,10 @@
       });
       const data = await r.json();
       const row = document.querySelector(`.setting-row[data-key="${key}"]`);
-      const status = row ? row.querySelector(".setting-status") : null;
+      // querySelector returns Element; cast to HTMLElement so .style works.
+      const status = /** @type {HTMLElement | null} */ (
+        row ? row.querySelector(".setting-status") : null
+      );
       if (!r.ok) {
         if (status) {
           status.textContent = data.error || "failed";
