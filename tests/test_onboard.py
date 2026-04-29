@@ -18,9 +18,8 @@ from voiceclip import config, onboard
 
 
 @pytest.fixture(autouse=True)
-def _isolated(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr(config, "CONFIG_PATH", str(tmp_path / "config.json"))
+def _isolated(isolated_config):
+    """Use shared isolated_config — onboard tests only need config isolation."""
     yield
 
 

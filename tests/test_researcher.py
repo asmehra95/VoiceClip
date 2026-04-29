@@ -14,20 +14,13 @@ from voiceclip import config, history, llm_provider, researcher
 
 
 @pytest.fixture(autouse=True)
-def _isolate(tmp_path, monkeypatch):
-    """Each test gets a fresh DB + config. Research is enabled in local mode."""
-    monkeypatch.setattr(history, "DB_PATH", str(tmp_path / "history.db"))
-    monkeypatch.setattr(history, "_conn", None)
-    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr(config, "CONFIG_PATH", str(tmp_path / "config.json"))
-    config.load()
-    history.init()
-    # Force research into local mode for the duration of each test
+def _isolate(live_history, monkeypatch):
+    """Reuse the shared live_history fixture; layer research-specific
+    overrides (force provider=local with a stub model id) on top."""
     monkeypatch.setattr(config, "RESEARCH_PROVIDER", "local")
     monkeypatch.setattr(config, "RESEARCH_LOCAL_MODEL",
                         "mlx-community/TestStub-4bit")
     yield
-    history.close()
 
 
 class TestLocalResearchBranch:

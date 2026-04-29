@@ -11,11 +11,9 @@ from voiceclip import config, history
 
 
 @pytest.fixture
-def _isolated(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr(config, "CONFIG_PATH", str(tmp_path / "config.json"))
-    monkeypatch.setattr(history, "DB_PATH", str(tmp_path / "history.db"))
-    monkeypatch.setattr(history, "_conn", None)
+def _isolated(isolated_db):
+    """Use shared isolated_db fixture (config + history DB pointer set,
+    but no init). doctor.run() exercises the pre-init path separately."""
     yield
 
 

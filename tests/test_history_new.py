@@ -14,17 +14,11 @@ from voiceclip import config, history
 
 
 @pytest.fixture(autouse=True)
-def _fresh_db(tmp_path, monkeypatch):
-    """Point history at a temp SQLite file for each test."""
-    db = str(tmp_path / "history.db")
-    monkeypatch.setattr(history, "DB_PATH", db)
-    monkeypatch.setattr(history, "_conn", None)
-    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr(config, "CONFIG_PATH", str(tmp_path / "config.json"))
-    config.load()  # sets PERSONA, MODEL, etc. needed by save()
-    history.init()
+def _fresh_db(live_history):
+    """Use the shared live_history fixture (config loaded, history
+    initialized, fresh DB). Kept as an autouse wrapper so individual
+    tests don't need to request it explicitly."""
     yield
-    history.close()
 
 
 class TestSchema:
@@ -477,3 +471,108 @@ class TestArchive:
         history.archive_topic(b)
         archived = history.list_archived_research_topics()
         assert [t["text"] for t in archived] == ["second", "first"]
+
+
+# ---------------------------------------------------------------------------
+# Migrated from the old test_history.py before it was removed.
+# Covers: DB file permissions, CLI-format query helpers, get_by_id,
+# clear_all, and the "not initialized" no-op path.
+# ---------------------------------------------------------------------------
+
+class TestDbFilePermissions:
+    def test_db_is_0600(self, tmp_path):
+        db_path = os.path.join(str(tmp_path), "history.db")
+        # Fixture already re-initialized the DB in tmp_path
+        # Find where it actually got created
+        import voiceclip.history as h
+        actual_db = h.DB_PATH
+        assert os.path.exists(actual_db)
+        mode = oct(os.stat(actual_db).st_mode)[-3:]
+        assert mode == "600"
+
+
+class TestCliQueryHelpers:
+    """Tests for the query_* functions that return CLI-formatted strings.
+    Distinct from search_entries() which returns dicts."""
+
+    def test_query_recent_honors_limit(self):
+        for i in range(20):
+            history.save(f"msg {i}", f"Msg {i}.", 1.0)
+        result = history.query_recent(limit=5)
+        assert "Msg 19." in result
+        assert "Msg 15." in result
+        assert "Msg 0." not in result
+
+    def test_query_today_finds_today_entries(self):
+        history.save("today msg", "Today msg.", 1.0)
+        result = history.query_today()
+        assert "Today msg." in result
+
+    def test_query_search_finds_matches(self):
+        history.save("meeting notes", "Meeting notes about the project.", 3.0)
+        history.save("lunch plans", "Lunch at noon.", 1.0)
+        result = history.query_search("meeting")
+        assert "Meeting notes" in result
+
+    def test_query_search_no_results_is_friendly(self):
+        history.save("hello", "Hello.", 1.0)
+        result = history.query_search("nonexistent")
+        assert "0" in result  # "0 entries" or "0 results" format
+
+    def test_get_by_id_happy_and_missing(self):
+        history.save("first", "First.", 1.0)
+        history.save("second", "Second.", 1.0)
+        assert history.get_by_id(1) == "First."
+        assert history.get_by_id(2) == "Second."
+        assert history.get_by_id(999) is None
+
+
+class TestClearAll:
+    def test_clear_all_removes_everything(self):
+        history.save("one", "One.", 1.0)
+        history.save("two", "Two.", 1.0)
+        assert history.count() == 2
+        history.clear_all(force=True)
+        assert history.count() == 0
+
+
+class TestSingleArgCleanup:
+    """The CLI calls history.cleanup(max_days) positionally. Make sure
+    that single-arg form still works alongside the kind-scoped API tested
+    in TestCleanup above."""
+
+    def test_single_arg_cleanup(self):
+        history._conn.execute(
+            "INSERT INTO transcriptions (timestamp, raw_text, formatted_text, "
+            "duration_seconds, persona, model, word_count, kind, app_name, "
+            "window_title, is_research_topic) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("2020-01-01T00:00:00", "old", "Old.", 1.0, "default", "tiny", 1,
+             "transcription", None, None, 0),
+        )
+        history._conn.commit()
+        history.save("new", "New.", 1.0)
+        assert history.count() == 2
+        history.cleanup(max_days=30)
+        assert history.count() == 1
+
+
+class TestHistoryDisabled:
+    """When history isn't initialized (_conn is None), ops should be
+    no-ops / return friendly strings. This is the opt-out path: user
+    disables history, app must not crash."""
+
+    def test_save_is_noop_when_not_initialized(self, monkeypatch):
+        monkeypatch.setattr(history, "_conn", None)
+        # Should not raise
+        result = history.save("test", "Test.", 1.0)
+        assert result is None
+        assert history.count() == 0
+
+    def test_query_returns_friendly_message(self, monkeypatch):
+        monkeypatch.setattr(history, "_conn", None)
+        assert "not enabled" in history.query_recent()
+
+    def test_get_by_id_returns_none(self, monkeypatch):
+        monkeypatch.setattr(history, "_conn", None)
+        assert history.get_by_id(1) is None

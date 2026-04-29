@@ -12,15 +12,10 @@ from voiceclip import config, history, llm_provider, summarizer, patterns
 
 
 @pytest.fixture(autouse=True)
-def _isolate(tmp_path, monkeypatch):
-    monkeypatch.setattr(history, "DB_PATH", str(tmp_path / "history.db"))
-    monkeypatch.setattr(history, "_conn", None)
-    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr(config, "CONFIG_PATH", str(tmp_path / "config.json"))
-    config.load()
-    history.init()
+def _isolate(live_history):
+    """Shared live_history fixture — DB ready, config loaded, cleaned up
+    in teardown. No extra overrides needed for these tests."""
     yield
-    history.close()
 
 
 class TestSummarizerLocalDirective:

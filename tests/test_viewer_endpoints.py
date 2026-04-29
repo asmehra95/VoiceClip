@@ -6,61 +6,19 @@ network traffic; those endpoints are exercised for their disabled-guard
 responses only.
 """
 
-import json
-import os
-import tempfile
-import threading
-import time
 import urllib.request
-import urllib.error
 from datetime import datetime
-from http.server import ThreadingHTTPServer
 
 import pytest
 
 from voiceclip import config, history
-from voiceclip.viewer import Handler
+from tests.conftest import http_get as _get, http_post as _post
 
 
 @pytest.fixture
-def server(tmp_path, monkeypatch):
-    """Start a viewer server on a free port pointed at a temp DB."""
-    monkeypatch.setattr(history, "DB_PATH", str(tmp_path / "history.db"))
-    monkeypatch.setattr(history, "_conn", None)
-    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr(config, "CONFIG_PATH", str(tmp_path / "config.json"))
-    config.load()
-    history.init()
-
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    port = srv.server_address[1]
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    time.sleep(0.05)
-    try:
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        srv.shutdown()
-        srv.server_close()
-        history.close()
-
-
-def _get(url):
-    return json.loads(urllib.request.urlopen(url).read())
-
-
-def _post(url, body):
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        resp = urllib.request.urlopen(req)
-        return resp.getcode(), json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read())
+def server(live_viewer):
+    """Back-compat alias: tests here use `server` as the URL value."""
+    return live_viewer
 
 
 class TestGetEndpoints:

@@ -15,10 +15,9 @@ from voiceclip import config, consent
 
 
 @pytest.fixture(autouse=True)
-def _isolated(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr(config, "CONFIG_PATH", str(tmp_path / "config.json"))
-    # Reset all provider configs to 'none' for a clean slate each test
+def _isolated(isolated_config, monkeypatch):
+    """Use shared isolated_config; reset all provider configs to 'none'
+    for a clean slate each test (consent checks provider state)."""
     monkeypatch.setattr(config, "SUMMARIES_PROVIDER", "none")
     monkeypatch.setattr(config, "RESEARCH_PROVIDER", "none")
     monkeypatch.setattr(config, "PATTERNS_PROVIDER", "none")
