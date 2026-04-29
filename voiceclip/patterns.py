@@ -74,6 +74,16 @@ def _build_user_message(window_days: int) -> tuple[str, dict]:
             daily_summaries.append({"date": d, "summary": s["summary"]})
     apps = history.app_distribution_for_window(start_str, end_str, top_n=8)
     all_entries = history.entries_for_window(start_str, end_str)
+
+    # Drop stuck-hotkey / character-noise entries from both the raw
+    # transcription count and the reflections list. App distribution
+    # keeps its full count — those aggregates only drive the UI's
+    # "where did you spend time" bar, and dropping an app tally over a
+    # stuck key would hide the real signal ("something went wrong on
+    # that app that day").
+    from voiceclip.text_quality import filter_entries
+    reflections = filter_entries(reflections)
+    all_entries = filter_entries(all_entries)
     n_transcriptions = sum(1 for e in all_entries if e["kind"] == "transcription")
     n_reflections = len(reflections)
 
