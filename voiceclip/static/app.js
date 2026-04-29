@@ -172,12 +172,27 @@
     if (data.entries.length > 0) {
       if (data.summary_enabled) {
         if (data.summary && data.summary.summary) {
-          const meta = el("div", {class:"meta"},[
-            `Summary · ${data.summary.provider} · ${shortModel(data.summary.model)}`,
-            el("button", {class:"refresh", onclick: () => regen(data.date)}, "Refresh"),
-          ]);
-          const body = el("div", {class:"body"}, data.summary.summary);
-          summarySlot.appendChild(el("div", {class:"summary"}, [meta, body]));
+          // Render as a collapsed <details> so the summary text doesn't
+          // take up space by default. A one-line preview lives in the
+          // <summary> line so the user knows what's inside without
+          // expanding. Matches the research-brief + archived-topics
+          // collapsible pattern already in the UI.
+          const previewText = previewOf(data.summary.summary);
+          const summaryEl = el("details", {class: "summary-details"});
+          summaryEl.appendChild(el("summary", null, [
+            el("span", {class: "summary-label"}, "Summary"),
+            el("span", {class: "summary-meta"},
+              `${data.summary.provider} · ${shortModel(data.summary.model)}`),
+            el("span", {class: "summary-preview"}, previewText),
+            el("button", {
+              class: "refresh",
+              // Stop the click from toggling the <details> — refreshing
+              // shouldn't expand or collapse the panel.
+              onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); regen(data.date); },
+            }, "Refresh"),
+          ]));
+          summaryEl.appendChild(el("div", {class: "body"}, data.summary.summary));
+          summarySlot.appendChild(summaryEl);
         } else {
           const label = data.summary_model
             ? `Generate a summary? · ${data.summary_provider} · ${shortModel(data.summary_model)}`

@@ -1166,3 +1166,92 @@ details.archived-topics[open] > summary { margin-bottom: 12px; }
   padding: 0 2px;
 }
 .recommended-picker-note:empty { display: none; }
+
+
+/* Collapsible daily summary — opens to show full text, collapsed by
+   default so the summary card doesn't dominate the journal view. */
+details.summary-details {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 20px;
+  margin: 20px 0 24px;
+}
+details.summary-details[open] {
+  padding-bottom: 18px;
+}
+details.summary-details > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  user-select: none;
+  padding: 4px 0;
+  min-height: 24px;
+}
+details.summary-details > summary::-webkit-details-marker { display: none; }
+details.summary-details > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 12px;
+  color: var(--muted);
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+details.summary-details[open] > summary::before { transform: rotate(90deg); }
+
+details.summary-details .summary-label {
+  color: var(--text);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+details.summary-details .summary-meta {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  flex-shrink: 0;
+}
+details.summary-details .summary-preview {
+  color: var(--muted);
+  font-size: 13px;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+details.summary-details[open] .summary-preview {
+  /* When expanded, hide the preview — the full body will render below. */
+  display: none;
+}
+details.summary-details > summary button.refresh {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+details.summary-details > summary button.refresh:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+details.summary-details .body {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+  line-height: 1.65;
+  font-size: 15px;
+  white-space: pre-wrap;
+}
