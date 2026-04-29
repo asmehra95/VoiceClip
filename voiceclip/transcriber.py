@@ -19,6 +19,17 @@ from voiceclip.utils import safe_unlink
 
 log = logging.getLogger(__name__)
 
+
+class TranscriptionError(RuntimeError):
+    """Raised when transcription fails in a way the user should know about.
+
+    Distinct from `transcribe(...)` returning None, which means "audio was
+    processed but no speech was detected." An exception means "something
+    actually broke" — timeout, model crash, missing file — and the caller
+    should surface a notification with the error message.
+    """
+
+
 # Pre-resolve the model repo at import time (avoids per-call overhead)
 _REPO, _MODEL_KEY = get_model_repo()
 
@@ -106,8 +117,11 @@ def transcribe(audio_path):
 
     Deletes the audio file after transcription regardless of outcome.
     Includes a timeout watchdog — if mlx_whisper hangs beyond
-    TRANSCRIBE_TIMEOUT seconds, returns None so the hotkey handler
-    can recover.
+    TRANSCRIBE_TIMEOUT seconds, raises TranscriptionError so the hotkey
+    handler can notify the user. Unexpected exceptions propagate the same
+    way — the only silent-None path is "no speech detected" (legitimate
+    empty output), which is why the caller distinguishes `None` (silence)
+    from a raised exception (failure to recover from).
     """
     if not audio_path:
         return None
@@ -136,21 +150,27 @@ def transcribe(audio_path):
 
     if worker.is_alive():
         log.error(
-            "Transcription timed out after %ds — model may be hung. "
-            "Returning None so recording can continue.",
+            "Transcription timed out after %ds — model may be hung.",
             TRANSCRIBE_TIMEOUT,
         )
-        # Can't kill the thread (C extension), but we return None
-        # so the caller clears _busy and the user can keep recording.
-        # The temp file will be cleaned up on next startup.
-        return None
+        # Can't kill the thread (C extension). The temp file will be
+        # cleaned up on next startup. Raising — not returning None —
+        # so the caller can tell "timed out" from "no speech detected".
+        raise TranscriptionError(
+            f"Transcription timed out after {TRANSCRIBE_TIMEOUT}s. "
+            "The Whisper model may be stuck. Run `voiceclip doctor` to check "
+            "your setup; if this keeps happening, restart VoiceClip."
+        )
 
     # Clean up temp file now that transcription is done
     safe_unlink(audio_path)
 
     if error_box[0]:
         log.error("Transcription error: %s", error_box[0])
-        return None
+        raise TranscriptionError(
+            f"Transcription failed: {type(error_box[0]).__name__}: {error_box[0]}. "
+            "Run `voiceclip doctor` to diagnose."
+        ) from error_box[0]
 
     result = result_box[0]
     if not result:

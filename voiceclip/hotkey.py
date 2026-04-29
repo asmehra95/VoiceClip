@@ -33,7 +33,7 @@ from voiceclip.macos import (
     notify,
 )
 from voiceclip.recorder import Recorder
-from voiceclip.transcriber import transcribe
+from voiceclip.transcriber import TranscriptionError, transcribe
 
 log = logging.getLogger(__name__)
 
@@ -211,16 +211,41 @@ class HotkeyHandler:
         log.info("Recording started (profile=%s)", self._profile)
 
     def _stop_and_transcribe(self):
-        """Stop recording, transcribe, deliver result."""
+        """Stop recording, transcribe, deliver result.
+
+        Three failure modes the user should know about:
+          1. Recorder produced no audio (e.g. mic disconnected) — notified.
+          2. Transcription raised TranscriptionError (timeout, model crash)
+             — notified with the specific error + doctor pointer.
+          3. Recorder raised RuntimeError (pipe broken, child died) —
+             notified and restart attempted.
+
+        "No speech detected" is distinct from the above — that's the empty
+        None return, and we notify with neutral copy since it's usually
+        user-initiated (quiet tap, mic muted, background noise only).
+        """
         try:
             path = self._recorder.end()
             if not path:
                 log.warning("No audio captured")
-                notify(self._label, "No audio captured")
+                notify(
+                    f"{self._label} ❌",
+                    "No audio captured — mic disconnected? Run voiceclip doctor",
+                )
+                beep("Funk")
                 return
 
             t0 = time.time()
-            text = transcribe(path)
+            try:
+                text = transcribe(path)
+            except TranscriptionError as e:
+                # Whisper timed out or crashed. Surface the specific
+                # reason + the doctor pointer that's already baked into
+                # the error message.
+                log.error("Transcription failed: %s", e)
+                notify(f"{self._label} ❌", str(e)[:120])
+                beep("Funk")
+                return
             elapsed = time.time() - t0
 
             raw_text = text  # Save before formatting
@@ -236,9 +261,19 @@ class HotkeyHandler:
 
         except RuntimeError as e:
             log.error("Recorder error: %s", e)
+            notify(
+                f"{self._label} ❌",
+                "Recorder error — attempting restart. Run voiceclip doctor if this persists.",
+            )
+            beep("Funk")
             self._try_restart_recorder()
         except Exception as e:
             log.error("Unexpected error: %s", e)
+            notify(
+                f"{self._label} ❌",
+                "Unexpected error — run voiceclip doctor",
+            )
+            beep("Funk")
         finally:
             with self._lock:
                 self._busy = False
@@ -305,4 +340,7 @@ class HotkeyHandler:
             log.info("Recorder restarted successfully")
         except Exception as e:
             log.error("Failed to restart recorder: %s", e)
-            notify(f"{self._label} ❌", "Recorder crashed. Restart VoiceClip.")
+            notify(
+                f"{self._label} ❌",
+                "Recorder crashed. Restart VoiceClip, then run voiceclip doctor.",
+            )
