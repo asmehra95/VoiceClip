@@ -338,7 +338,6 @@ def _run_voiceclip():
 
     print("\n  Starting audio recorder...")
     recorder = Recorder()
-
     handlers: list = []
 
     def _shutdown(signum=None, frame=None):
@@ -371,12 +370,6 @@ def _run_voiceclip():
     print("\n  Preloading Whisper model (first run downloads ~3 GB)...")
     preload_model()
     print("  ✅ Model ready")
-
-    print("\n  Microphones:")
-    try:
-        print(recorder.list_devices())
-    except RuntimeError as e:
-        log.warning("Could not list devices: %s", e)
 
     print()
     hotkey_name = config.hotkey_display_name()

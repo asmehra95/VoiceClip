@@ -212,18 +212,6 @@ def _recorder_loop(conn):
             except Exception:
                 conn.send(None)
 
-        elif msg == RecorderCmd.LIST_DEVICES:
-            try:
-                devices = sd.query_devices()
-                lines = []
-                for i, d in enumerate(devices):
-                    if d["max_input_channels"] > 0:
-                        marker = " ⭐ (Default)" if i == default_dev else ""
-                        lines.append(f"    [{i}] {d['name']}{marker}")
-                conn.send("\n".join(lines) if lines else "    No input devices found")
-            except Exception as e:
-                conn.send(f"    Error listing devices: {e}")
-
         elif msg == RecorderCmd.QUIT:
             break
 
@@ -327,10 +315,6 @@ class Recorder:
             return None
         log.info("Recorded %.1f KB", size / 1024)
         return path
-
-    def list_devices(self):
-        """Return a formatted string of available input devices."""
-        return self._send_recv(RecorderCmd.LIST_DEVICES)
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,6 @@ class RecorderCmd(Enum):
     """Commands sent from the main process to the recorder child process."""
     START = "start"
     STOP = "stop"
-    LIST_DEVICES = "list_devices"
     QUIT = "quit"
 
 
