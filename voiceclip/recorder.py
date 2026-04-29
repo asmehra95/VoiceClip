@@ -257,7 +257,19 @@ class Recorder:
         log.info("Recorder process started (pid=%d)", self._proc.pid)
 
     def shutdown(self):
-        """Gracefully shut down the child process."""
+        """Gracefully shut down the child process.
+
+        Timing notes:
+        - 5s join timeout. The child has to close the CoreAudio input
+          stream, which can take 1-3s on Bluetooth / Continuity devices.
+          The previous 2s timeout was racing that teardown, logging a
+          scary "Recorder terminated forcefully" WARNING for a child
+          that was milliseconds away from exiting cleanly on its own.
+        - If the join still times out after 5s, something is genuinely
+          wrong — terminate() and log at debug level. The user already
+          saw "👋 VoiceClip stopped."; flooding the final line with
+          WARNING is worse than silently cleaning up.
+        """
         self._alive = False
         if self._conn:
             try:
@@ -265,10 +277,10 @@ class Recorder:
             except (BrokenPipeError, OSError):
                 pass
         if self._proc:
-            self._proc.join(timeout=2)
+            self._proc.join(timeout=5)
             if self._proc.is_alive():
                 self._proc.terminate()
-                log.warning("Recorder terminated forcefully")
+                log.debug("Recorder did not exit within 5s; terminated")
 
     def restart(self):
         """Shut down and respawn the recorder."""
