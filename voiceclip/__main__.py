@@ -395,7 +395,15 @@ def _run_voiceclip():
             print(f"  💭  Hold {rname} to capture a reflection (saved, not pasted)")
 
     if config.HISTORY_ENABLED:
-        print("     History: voiceclip history")
+        # Two different affordances users consistently miss according to the
+        # product review — surface both here at daemon start, once per run.
+        # Low-cost reminder that costs nothing if the user already knows
+        # these commands.
+        print("     History:   voiceclip history")
+        print("     Browse:    voiceclip view    (opens the web journal)")
+        print("     Diagnose:  voiceclip doctor  (if anything seems off)")
+    else:
+        print("     Diagnose:  voiceclip doctor  (if anything seems off)")
     print("     Ctrl+C to quit")
     print()
 
@@ -422,11 +430,65 @@ def _run_voiceclip():
         reflection_handler.start()
         handlers.append(reflection_handler)
 
+    # Validate the hotkey listener actually registered with macOS.
+    # pynput's `Listener.start()` returns immediately but the underlying
+    # CFRunLoop only checks AXIsProcessTrusted (Accessibility grant) on
+    # its own thread shortly after. If permission is missing, the listener
+    # stays "running" but silently receives no events — user presses the
+    # key, nothing happens, no clue why. Wait a beat then check the
+    # Darwin-specific IS_TRUSTED flag and log a loud warning if false.
+    _validate_hotkey_listener(transcription_handler, "transcription")
+    if reflection_active:
+        _validate_hotkey_listener(reflection_handler, "reflection")
+
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         _shutdown()
+
+
+def _validate_hotkey_listener(handler, label: str):
+    """Post-start check that the pynput listener is actually receiving
+    events. The Darwin pynput backend surfaces an IS_TRUSTED flag that
+    mirrors macOS Accessibility grant — if it's False the listener is
+    a no-op even though `.running` is True.
+
+    We give the listener 500ms to initialize on its CFRunLoop thread
+    before checking. False negatives (check runs before _run() sets the
+    flag) just log at info; users who see no warning but still have
+    broken hotkeys are directed at `voiceclip doctor` from the other
+    error paths.
+    """
+    log = logging.getLogger("voiceclip")
+    listener = getattr(handler, "_listener", None)
+    if listener is None:
+        log.warning(
+            "Hotkey %s listener did not start. Run `voiceclip doctor`.",
+            label,
+        )
+        return
+
+    time.sleep(0.5)  # let _run() set IS_TRUSTED on the listener thread
+
+    is_trusted = getattr(listener, "IS_TRUSTED", None)
+    if is_trusted is False:
+        log.error(
+            "⚠️  Hotkey %s is registered but macOS Accessibility is NOT granted. "
+            "Key presses will be ignored until you grant it. "
+            "System Settings → Privacy & Security → Accessibility → add your terminal. "
+            "Then restart VoiceClip. Run `voiceclip doctor` to verify.",
+            label,
+        )
+        return
+
+    if not getattr(listener, "running", False):
+        log.warning(
+            "Hotkey %s listener stopped unexpectedly after start. "
+            "Another app may have grabbed the key, or Input Monitoring was revoked. "
+            "Run `voiceclip doctor` to diagnose.",
+            label,
+        )
 
 
 def main():
