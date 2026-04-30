@@ -57,7 +57,7 @@ dev = [
 voiceclip = "voiceclip.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/vtasing/voiceclip"
+Homepage = "https://github.com/asmehra95/VoiceClip"
 
 # ---------------------------------------------------------------------------
 # setuptools — flat-layout discovery with explicit package so tests/ doesn't

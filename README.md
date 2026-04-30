@@ -16,7 +16,7 @@ that reaches the network.
 ## Quick Start
 
 ```bash
-git clone <REPO_URL> && cd voiceclip
+git clone https://github.com/asmehra95/VoiceClip.git && cd VoiceClip
 bash install.sh
 voiceclip
 ```
@@ -68,7 +68,7 @@ because the model is downloading.
 ### Recommended: `install.sh`
 
 ```bash
-git clone <REPO_URL> && cd voiceclip
+git clone https://github.com/asmehra95/VoiceClip.git && cd VoiceClip
 bash install.sh
 ```
 
@@ -102,7 +102,7 @@ Then run `voiceclip` and try the hotkey.
 ### Manual install
 
 ```bash
-git clone <REPO_URL> && cd voiceclip
+git clone https://github.com/asmehra95/VoiceClip.git && cd VoiceClip
 brew install ffmpeg
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -207,10 +207,10 @@ Or define your own:
 {
   "personas": {
     "my-team": {
-      "prompt": "SIM, CR, oncall, Brazil, pip, Avtar",
+      "prompt": "CRDT, vector clock, eventual consistency, saga, idempotency",
       "dictionary": {
-        "sim": "SIM",
-        "c r": "CR"
+        "c r d t": "CRDT",
+        "saga": "saga"
       }
     }
   }
