@@ -44,6 +44,23 @@
       <button id="search_clear" style="display:none">Clear</button>
     </div>
 
+    <details class="ask-section" id="ask_section">
+      <summary>💬 Ask a question about your entries</summary>
+      <div class="ask-body">
+        <div class="ask-inputs">
+          <input id="ask_input" type="text"
+                 placeholder="e.g. What was I working on last Tuesday?"
+                 autocomplete="off">
+          <div class="ask-dates">
+            <label>From <input id="ask_start" type="date"></label>
+            <label>To <input id="ask_end" type="date"></label>
+          </div>
+          <button id="ask_btn">Ask</button>
+        </div>
+        <div id="ask_result"></div>
+      </div>
+    </details>
+
     <div id="summary_slot"></div>
     <div id="apps_slot"></div>
     <section class="entries" id="entries_slot"></section>

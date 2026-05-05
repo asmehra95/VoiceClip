@@ -1375,6 +1375,73 @@
     entries.forEach(e => slot.appendChild(renderEntry(e)));
   }
 
+  // ---------- Ask (question over a date range) ----------
+
+  (function initAsk() {
+    const askInput = $input("ask_input");
+    const askStart = $input("ask_start");
+    const askEnd = $input("ask_end");
+    const askBtn = $button("ask_btn");
+    const askResult = $id("ask_result");
+
+    // Default date range: last 7 days
+    const today = new Date();
+    const weekAgo = new Date(today);
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    const pad = n => String(n).padStart(2, "0");
+    askEnd.value = `${today.getFullYear()}-${pad(today.getMonth()+1)}-${pad(today.getDate())}`;
+    askStart.value = `${weekAgo.getFullYear()}-${pad(weekAgo.getMonth()+1)}-${pad(weekAgo.getDate())}`;
+
+    askBtn.addEventListener("click", runAsk);
+    askInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") { ev.preventDefault(); runAsk(); }
+    });
+
+    async function runAsk() {
+      const question = askInput.value.trim();
+      if (!question) return;
+
+      askResult.innerHTML = "";
+      askResult.appendChild(el("div", {class: "ask-loading"}, [
+        el("span", {class: "spinner"}),
+        " Thinking…",
+      ]));
+      askBtn.disabled = true;
+
+      try {
+        const r = await fetch("/api/ask", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            question,
+            start_date: askStart.value || undefined,
+            end_date: askEnd.value || undefined,
+          }),
+        });
+        const data = await r.json();
+        askResult.innerHTML = "";
+
+        if (!r.ok) {
+          askResult.appendChild(el("div", {class: "ask-error"},
+            data.error || "Something went wrong."));
+          return;
+        }
+
+        const meta = `${data.entry_count} entries · ${data.start_date} to ${data.end_date} · ${data.provider} · ${shortModel(data.model)}`;
+        askResult.appendChild(el("div", {class: "ask-answer"}, [
+          renderMarkdown(data.answer),
+          el("div", {class: "ask-meta"}, meta),
+        ]));
+      } catch (e) {
+        askResult.innerHTML = "";
+        askResult.appendChild(el("div", {class: "ask-error"},
+          e.message || "Network error"));
+      } finally {
+        askBtn.disabled = false;
+      }
+    }
+  })();
+
   // ---------- Settings ----------
   //
   // Loads the schema + current values from /api/settings, renders one input
