@@ -564,3 +564,32 @@ def hotkey_display_name(key_str: str | None = None) -> str:
         "esc": "Escape",
     }
     return names.get(source.lower().strip(), source)
+
+
+def model_id_for(feature: str) -> str | None:
+    """Return the active model_id for a feature based on its configured provider.
+
+    Resolves the if-local/openai/anthropic dispatch that every feature module
+    repeats. Returns None if the provider is 'none' or unrecognized.
+
+    Supported features: 'summaries', 'research', 'patterns'.
+    """
+    _FEATURE_MAP = {
+        "summaries": (SUMMARIES_PROVIDER, SUMMARIES_LOCAL_MODEL,
+                      SUMMARIES_OPENAI_MODEL, SUMMARIES_ANTHROPIC_MODEL),
+        "research": (RESEARCH_PROVIDER, RESEARCH_LOCAL_MODEL,
+                     RESEARCH_OPENAI_MODEL, RESEARCH_ANTHROPIC_MODEL),
+        "patterns": (PATTERNS_PROVIDER, PATTERNS_LOCAL_MODEL,
+                     PATTERNS_OPENAI_MODEL, PATTERNS_ANTHROPIC_MODEL),
+    }
+    entry = _FEATURE_MAP.get(feature)
+    if entry is None:
+        return None
+    provider, local, openai, anthropic = entry
+    if provider == "local":
+        return local
+    if provider == "openai":
+        return openai
+    if provider == "anthropic":
+        return anthropic
+    return None

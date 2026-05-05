@@ -261,13 +261,8 @@ def generate_patterns(window_days: int | None = None, *, force: bool = False) ->
                 log.info("patterns cache hit for %s", cache_key)
                 return _cache[cache_key]
 
-    if provider == "local":
-        model_id = config.PATTERNS_LOCAL_MODEL
-    elif provider == "openai":
-        model_id = config.PATTERNS_OPENAI_MODEL
-    elif provider == "anthropic":
-        model_id = config.PATTERNS_ANTHROPIC_MODEL
-    else:
+    model_id = config.model_id_for("patterns")
+    if model_id is None:
         raise RuntimeError(f"unknown patterns provider: {provider}")
 
     raw = _run(provider, _SYSTEM_PROMPT, user_prompt, model_id)

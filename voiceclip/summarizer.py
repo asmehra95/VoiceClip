@@ -151,13 +151,8 @@ def summarize_day(date: str, *, force: bool = False) -> dict | None:
         if cached.get("entry_count", 0) >= len(entries):
             return cached
 
-    if provider == "local":
-        model_id = config.SUMMARIES_LOCAL_MODEL
-    elif provider == "openai":
-        model_id = config.SUMMARIES_OPENAI_MODEL
-    elif provider == "anthropic":
-        model_id = config.SUMMARIES_ANTHROPIC_MODEL
-    else:
+    model_id = config.model_id_for("summaries")
+    if model_id is None:
         return None
 
     style = config.SUMMARIES_STYLE
@@ -216,13 +211,8 @@ def generate_timeline(date: str, *, force: bool = False) -> dict | None:
         if cached.get("entry_count", 0) >= len(entries):
             return cached
 
-    if provider == "local":
-        model_id = config.SUMMARIES_LOCAL_MODEL
-    elif provider == "openai":
-        model_id = config.SUMMARIES_OPENAI_MODEL
-    elif provider == "anthropic":
-        model_id = config.SUMMARIES_ANTHROPIC_MODEL
-    else:
+    model_id = config.model_id_for("summaries")
+    if model_id is None:
         return None
 
     # Reuse _build_prompt's user-message construction by passing a style
