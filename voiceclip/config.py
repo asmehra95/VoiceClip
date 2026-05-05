@@ -192,6 +192,51 @@ def _ensure_config_file():
         log.warning("Could not create config file: %s", e)
 
 
+_VALID_PROVIDERS = ("none", "local", "openai", "anthropic")
+_DEFAULT_LOCAL_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+_DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+_DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5"
+
+
+def _load_provider_block(
+    cfg: dict, block_name: str, env_prefix: str,
+) -> tuple[str, str, str, str]:
+    """Load a feature's provider + three model-id fields from config + env.
+
+    Each of summaries / research / patterns has the same shape:
+      - A nested dict in config.json (e.g. cfg["summaries"])
+      - A provider field validated against _VALID_PROVIDERS
+      - Three model-id fields (local, openai, anthropic) with env overrides
+
+    Returns (provider, local_model, openai_model, anthropic_model).
+    """
+    block = cfg.get(block_name, {})
+    if not isinstance(block, dict):
+        block = {}
+
+    provider = os.environ.get(
+        f"VOICECLIP_{env_prefix}_PROVIDER",
+        block.get("provider", "none"),
+    )
+    if provider not in _VALID_PROVIDERS:
+        log.warning("Invalid %s.provider '%s', using 'none'", block_name, provider)
+        provider = "none"
+
+    local_model = os.environ.get(
+        f"VOICECLIP_{env_prefix}_LOCAL_MODEL",
+        block.get("local_model", _DEFAULT_LOCAL_MODEL),
+    )
+    openai_model = os.environ.get(
+        f"VOICECLIP_{env_prefix}_OPENAI_MODEL",
+        block.get("openai_model", _DEFAULT_OPENAI_MODEL),
+    )
+    anthropic_model = os.environ.get(
+        f"VOICECLIP_{env_prefix}_ANTHROPIC_MODEL",
+        block.get("anthropic_model", _DEFAULT_ANTHROPIC_MODEL),
+    )
+    return provider, local_model, openai_model, anthropic_model
+
+
 def load():
     """Load config from JSON file, apply env var overrides, resolve persona.
 
@@ -274,81 +319,28 @@ def load():
     if REFLECTION_MAX_DAYS < 0:
         REFLECTION_MAX_DAYS = 0
 
-    # Summaries (nested block)
-    summaries_cfg = cfg.get("summaries", {})
-    if not isinstance(summaries_cfg, dict):
-        summaries_cfg = {}
-    SUMMARIES_PROVIDER = os.environ.get(
-        "VOICECLIP_SUMMARIES_PROVIDER",
-        summaries_cfg.get("provider", "none"),
-    )
-    if SUMMARIES_PROVIDER not in ("none", "local", "openai", "anthropic"):
-        log.warning("Invalid summaries.provider '%s', using 'none'", SUMMARIES_PROVIDER)
-        SUMMARIES_PROVIDER = "none"
-    SUMMARIES_LOCAL_MODEL = os.environ.get(
-        "VOICECLIP_SUMMARIES_LOCAL_MODEL",
-        summaries_cfg.get("local_model", "mlx-community/Qwen2.5-7B-Instruct-4bit"),
-    )
-    SUMMARIES_OPENAI_MODEL = os.environ.get(
-        "VOICECLIP_SUMMARIES_OPENAI_MODEL",
-        summaries_cfg.get("openai_model", "gpt-4o-mini"),
-    )
-    SUMMARIES_ANTHROPIC_MODEL = os.environ.get(
-        "VOICECLIP_SUMMARIES_ANTHROPIC_MODEL",
-        summaries_cfg.get("anthropic_model", "claude-haiku-4-5"),
-    )
-    SUMMARIES_STYLE = summaries_cfg.get("style", "descriptive")
+    # Summaries / Research / Patterns — three features with identical
+    # provider + model loading shape. Collapsed into a helper to avoid
+    # 120 lines of three-way duplication.
+    SUMMARIES_PROVIDER, SUMMARIES_LOCAL_MODEL, SUMMARIES_OPENAI_MODEL, \
+        SUMMARIES_ANTHROPIC_MODEL = _load_provider_block(
+            cfg, "summaries", "SUMMARIES")
+    SUMMARIES_STYLE = cfg.get("summaries", {}).get("style", "descriptive") \
+        if isinstance(cfg.get("summaries"), dict) else "descriptive"
     if SUMMARIES_STYLE not in ("descriptive", "reflective"):
         log.warning("Invalid summaries.style '%s', using 'descriptive'", SUMMARIES_STYLE)
         SUMMARIES_STYLE = "descriptive"
 
-    # Research block
-    research_cfg = cfg.get("research", {})
-    if not isinstance(research_cfg, dict):
-        research_cfg = {}
-    RESEARCH_PROVIDER = os.environ.get(
-        "VOICECLIP_RESEARCH_PROVIDER",
-        research_cfg.get("provider", "none"),
-    )
-    if RESEARCH_PROVIDER not in ("none", "local", "openai", "anthropic"):
-        log.warning("Invalid research.provider '%s', using 'none'", RESEARCH_PROVIDER)
-        RESEARCH_PROVIDER = "none"
-    RESEARCH_LOCAL_MODEL = os.environ.get(
-        "VOICECLIP_RESEARCH_LOCAL_MODEL",
-        research_cfg.get("local_model", "mlx-community/Qwen2.5-7B-Instruct-4bit"),
-    )
-    RESEARCH_OPENAI_MODEL = os.environ.get(
-        "VOICECLIP_RESEARCH_OPENAI_MODEL",
-        research_cfg.get("openai_model", "gpt-4o-mini"),
-    )
-    RESEARCH_ANTHROPIC_MODEL = os.environ.get(
-        "VOICECLIP_RESEARCH_ANTHROPIC_MODEL",
-        research_cfg.get("anthropic_model", "claude-haiku-4-5"),
-    )
+    RESEARCH_PROVIDER, RESEARCH_LOCAL_MODEL, RESEARCH_OPENAI_MODEL, \
+        RESEARCH_ANTHROPIC_MODEL = _load_provider_block(
+            cfg, "research", "RESEARCH")
 
-    # Patterns block — longitudinal LLM look across your recent history
+    PATTERNS_PROVIDER, PATTERNS_LOCAL_MODEL, PATTERNS_OPENAI_MODEL, \
+        PATTERNS_ANTHROPIC_MODEL = _load_provider_block(
+            cfg, "patterns", "PATTERNS")
     patterns_cfg = cfg.get("patterns", {})
     if not isinstance(patterns_cfg, dict):
         patterns_cfg = {}
-    PATTERNS_PROVIDER = os.environ.get(
-        "VOICECLIP_PATTERNS_PROVIDER",
-        patterns_cfg.get("provider", "none"),
-    )
-    if PATTERNS_PROVIDER not in ("none", "local", "openai", "anthropic"):
-        log.warning("Invalid patterns.provider '%s', using 'none'", PATTERNS_PROVIDER)
-        PATTERNS_PROVIDER = "none"
-    PATTERNS_LOCAL_MODEL = os.environ.get(
-        "VOICECLIP_PATTERNS_LOCAL_MODEL",
-        patterns_cfg.get("local_model", "mlx-community/Qwen2.5-7B-Instruct-4bit"),
-    )
-    PATTERNS_OPENAI_MODEL = os.environ.get(
-        "VOICECLIP_PATTERNS_OPENAI_MODEL",
-        patterns_cfg.get("openai_model", "gpt-4o-mini"),
-    )
-    PATTERNS_ANTHROPIC_MODEL = os.environ.get(
-        "VOICECLIP_PATTERNS_ANTHROPIC_MODEL",
-        patterns_cfg.get("anthropic_model", "claude-haiku-4-5"),
-    )
     try:
         PATTERNS_WINDOW_DAYS = int(patterns_cfg.get("window_days", 7))
     except (ValueError, TypeError):
