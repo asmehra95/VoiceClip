@@ -537,7 +537,7 @@ pytest
 ruff check voiceclip/ tests/
 
 # Type-check the frontend JS (optional, requires npx)
-npx -p typescript tsc --noEmit --project voiceclip/static/jsconfig.json
+npx -p typescript tsc --noEmit --project voiceclip/viewer/static/jsconfig.json
 ```
 
 The `[dev]` extra pulls in `ruff` and `pytest`. Cloud LLM providers and
@@ -568,8 +568,19 @@ voiceclip/
   text_quality.py   # Garbage-transcription detector
   transcriber.py    # Whisper inference on GPU
   utils.py          # Shared utilities
-  viewer.py         # Local web viewer + API endpoints
-  static/           # Viewer CSS / JS / HTML + jsconfig.json
+  viewer/           # Local web viewer subpackage
+    __init__.py     #   Re-exports Handler + serve for back-compat
+    server.py       #   HTTP handler class + serve()
+    routes/         #   One module per API feature domain
+      __init__.py   #     Dispatch registry (register_get/register_post)
+      consent.py    #     /api/consent, /api/consent/ack
+      entries.py    #     /api/day(s), /api/search, /api/update, /api/delete
+      models.py     #     /api/models, /api/models/delete
+      patterns.py   #     /api/patterns/*
+      research.py   #     /api/queue, /api/research/*
+      settings.py   #     /api/settings, /api/settings/update
+      summaries.py  #     /api/summarize, /api/timeline
+    static/         #   Frontend CSS, JS, HTML, jsconfig.json
 install.sh          # Installer
 pyproject.toml      # Package metadata + tool config (ruff, pytest)
 config.default.json # Default config with examples

@@ -65,13 +65,21 @@ Homepage = "https://github.com/asmehra95/VoiceClip"
 # ---------------------------------------------------------------------------
 
 [tool.setuptools]
-packages = ["voiceclip"]
+# Include the top-level `voiceclip` package plus the nested `viewer`
+# subpackage (server.py + routes/ + static/). Listing subpackages
+# explicitly is simpler than find-packages auto-discovery for a
+# project this size and makes it obvious what ships.
+packages = ["voiceclip", "voiceclip.viewer", "voiceclip.viewer.routes"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-# models.json ships with the package so list_recommended_models() works
-# after a `pip install .` without needing the source tree.
-voiceclip = ["models.json", "static/*.html", "static/*.css", "static/*.js"]
+# models.json ships with the voiceclip package so list_recommended_models()
+# works after a `pip install .` without needing the source tree.
+voiceclip = ["models.json"]
+# Frontend assets live under voiceclip/viewer/static/ and are served
+# directly from disk by the viewer's HTTP handler. They must ship with
+# the wheel so `voiceclip view` works from a pip-installed environment.
+"voiceclip.viewer" = ["static/*.html", "static/*.css", "static/*.js", "static/*.json"]
 
 # ---------------------------------------------------------------------------
 # ruff — lint + format. Replaces the "would probably add flake8 + black

@@ -15,7 +15,7 @@ import logging
 from datetime import datetime
 
 from voiceclip import config
-from voiceclip.routes import register_post
+from voiceclip.viewer.routes import register_post
 
 log = logging.getLogger(__name__)
 

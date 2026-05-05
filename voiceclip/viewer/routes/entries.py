@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from voiceclip import config, history
-from voiceclip.routes import register_get, register_post
+from voiceclip.viewer.routes import register_get, register_post
 
 # ---------------------------------------------------------------------------
 # Helpers — kept local to the entries module because they're only used by

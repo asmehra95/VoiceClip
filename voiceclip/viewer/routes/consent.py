@@ -7,7 +7,7 @@ POST /api/consent/ack  — user dismissed the in-UI banner, record ack
 from __future__ import annotations
 
 from voiceclip.consent import FEATURE_DATA_SENT, pending_acks, record_acks
-from voiceclip.routes import register_get, register_post
+from voiceclip.viewer.routes import register_get, register_post
 
 
 def _get_consent(req, query):

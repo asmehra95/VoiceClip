@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 
 from voiceclip import config, history
-from voiceclip.routes import register_get, register_post
+from voiceclip.viewer.routes import register_get, register_post
 
 log = logging.getLogger(__name__)
 
