@@ -106,7 +106,7 @@ git clone https://github.com/asmehra95/VoiceClip.git && cd VoiceClip
 brew install ffmpeg
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python transcribe.py
+python -m voiceclip
 ```
 
 ### Update
@@ -570,7 +570,6 @@ voiceclip/
   utils.py          # Shared utilities
   viewer.py         # Local web viewer + API endpoints
   static/           # Viewer CSS / JS / HTML + jsconfig.json
-transcribe.py       # Launcher
 install.sh          # Installer
 pyproject.toml      # Package metadata + tool config (ruff, pytest)
 config.default.json # Default config with examples
