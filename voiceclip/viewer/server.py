@@ -27,7 +27,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from voiceclip import history, routes
+from voiceclip import history
+from voiceclip.viewer import routes
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ _STATIC_DIR = Path(__file__).resolve().parent / "static"
 # ---------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    """Dispatches to route handlers registered in voiceclip.routes.
+    """Dispatches to route handlers registered in voiceclip.viewer.routes.
 
     Exposes a small set of response helpers (`_json`, `_html`, `_static`,
     `_not_found`) that route handlers call into. Handlers do not return
@@ -76,7 +77,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _static(self, rel_path: str):
-        """Serve a file from voiceclip/static/ with path-traversal protection."""
+        """Serve a file from voiceclip/viewer/static/ with path-traversal protection."""
         # Refuse anything with '..' or absolute-looking bits. Resolve the
         # request against _STATIC_DIR and verify the resolved path is still
         # inside it — belt and suspenders against traversal.
@@ -191,9 +192,9 @@ def serve(host: str = "127.0.0.1", port: int = 8723, open_browser: bool = True):
     history.init()
 
     # Populate the route registry by importing every submodule in
-    # voiceclip.routes. Doing this at server start (not at module import)
-    # keeps the viewer importable from tests that don't need the full
-    # routing surface.
+    # voiceclip.viewer.routes. Doing this at server start (not at module
+    # import) keeps the viewer importable from tests that don't need the
+    # full routing surface.
     routes.load_all()
 
     # Log pending-consent state at startup so logs capture it, but do NOT

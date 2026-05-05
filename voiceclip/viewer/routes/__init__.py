@@ -81,7 +81,7 @@ def load_all() -> None:
 
     # Import order doesn't matter — each module registers its own paths.
     # Listing them here makes it obvious which modules participate.
-    from voiceclip.routes import (  # noqa: F401
+    from voiceclip.viewer.routes import (  # noqa: F401
         consent,
         entries,
         models,
