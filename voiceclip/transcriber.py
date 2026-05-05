@@ -9,6 +9,7 @@ Performance notes:
 import logging
 import tempfile
 import threading
+import time
 
 import mlx_whisper
 import numpy as np
@@ -165,6 +166,10 @@ def transcribe(audio_path):
     # Clean up temp file now that transcription is done
     safe_unlink(audio_path)
 
+    # Mark model as recently used so keep-warm skips its next ping.
+    global _last_model_use
+    _last_model_use = time.time()
+
     if error_box[0]:
         log.error("Transcription error: %s", error_box[0])
         raise TranscriptionError(
@@ -208,6 +213,12 @@ _KEEP_WARM_INTERVAL_SECONDS = 300  # 5 minutes
 _keep_warm_thread: threading.Thread | None = None
 _keep_warm_stop = threading.Event()
 
+# Tracks the last time the model was actually used (real transcription
+# or keep-warm ping). The keep-warm loop skips its ping if a real
+# transcription happened within the interval — no point touching memory
+# that's already warm.
+_last_model_use: float = 0.0
+
 # Pre-generate the silent WAV once at module level rather than creating
 # and deleting a temp file every 5 minutes.
 _SILENCE_PATH: str | None = None
@@ -234,11 +245,18 @@ def _ensure_silence_file() -> str:
 
 def _keep_warm_loop():
     """Background loop: transcribe silence every N seconds to keep the
-    model weights resident in memory."""
+    model weights resident in memory. Skips the ping if a real
+    transcription happened within the interval (model is already warm)."""
+    global _last_model_use
     while not _keep_warm_stop.is_set():
         _keep_warm_stop.wait(_KEEP_WARM_INTERVAL_SECONDS)
         if _keep_warm_stop.is_set():
             return
+        # Skip if the model was used recently — it's already warm.
+        elapsed = time.time() - _last_model_use
+        if elapsed < _KEEP_WARM_INTERVAL_SECONDS:
+            log.debug("Keep-warm skipped (model used %.0fs ago)", elapsed)
+            continue
         try:
             path = _ensure_silence_file()
             mlx_whisper.transcribe(
@@ -247,6 +265,7 @@ def _keep_warm_loop():
                 language="en",
                 no_speech_threshold=0.6,
             )
+            _last_model_use = time.time()
             log.debug("Keep-warm ping completed")
         except Exception as e:
             # Swallow — a failed ping just means one potentially slow
