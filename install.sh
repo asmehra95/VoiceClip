@@ -81,8 +81,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Remove old source files before copying to avoid nested directory issues
 rm -rf "$INSTALL_DIR/voiceclip"
 cp -r "$SCRIPT_DIR/voiceclip" "$INSTALL_DIR/voiceclip"
-cp "$SCRIPT_DIR/transcribe.py" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/"
+
+# Clean up any leftover transcribe.py from previous installs — older
+# versions shipped this 5-line launcher, replaced by `python -m voiceclip`.
+rm -f "$INSTALL_DIR/transcribe.py"
 
 # Copy default config if user doesn't have one yet (preserve existing config)
 if [[ ! -f "$INSTALL_DIR/config.json" ]]; then
@@ -108,7 +111,7 @@ cat > "$INSTALL_DIR/run" << 'LAUNCHER'
 #!/bin/bash
 INSTALL_DIR="$HOME/.voiceclip"
 source "$INSTALL_DIR/.venv/bin/activate"
-python "$INSTALL_DIR/transcribe.py" "$@"
+python -m voiceclip "$@"
 LAUNCHER
 chmod +x "$INSTALL_DIR/run"
 
