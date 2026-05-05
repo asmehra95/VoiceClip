@@ -285,7 +285,7 @@ def _run_voiceclip():
     from voiceclip.formatter import build_patterns
     from voiceclip.hotkey import HotkeyHandler
     from voiceclip.recorder import Recorder, cleanup_stale_temps
-    from voiceclip.transcriber import preload_model
+    from voiceclip.transcriber import preload_model, start_keep_warm, stop_keep_warm
 
     print("=" * 50)
     print(f"  🎙️  VoiceClip v{__version__}")
@@ -368,6 +368,7 @@ def _run_voiceclip():
 
     def _shutdown(signum=None, frame=None):
         print("\n👋 VoiceClip stopped.")
+        stop_keep_warm()
         for h in handlers:
             try:
                 h.stop()
@@ -396,6 +397,7 @@ def _run_voiceclip():
     print("\n  Preloading Whisper model (first run downloads ~3 GB)...")
     preload_model()
     print("  ✅ Model ready")
+    start_keep_warm()
 
     print()
     hotkey_name = config.hotkey_display_name()

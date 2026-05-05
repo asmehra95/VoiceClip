@@ -184,3 +184,104 @@ def transcribe(audio_path):
 
     text = " ".join(s["text"].strip() for s in real).strip()
     return text or None
+
+
+# ---------------------------------------------------------------------------
+# Model keep-warm — prevents swap-out during idle periods
+# ---------------------------------------------------------------------------
+# macOS aggressively pages out memory that hasn't been touched recently.
+# The Whisper model weights (~3GB for large-v3-turbo) get swapped to disk
+# after a few minutes of inactivity, making the next dictation pay a 5-15s
+# penalty to page everything back in.
+#
+# The fix: a background thread that runs a trivial transcription (0.5s of
+# silence) every few minutes. This touches the model weights just enough
+# to keep them in the OS page cache without producing any visible output
+# or meaningful GPU load (~50ms per ping).
+#
+# The thread is daemon=True so it dies automatically when VoiceClip exits.
+# Failures are swallowed silently — if a keep-warm ping fails, the worst
+# case is the user gets one slow dictation, same as before this feature.
+
+_KEEP_WARM_INTERVAL_SECONDS = 300  # 5 minutes
+
+_keep_warm_thread: threading.Thread | None = None
+_keep_warm_stop = threading.Event()
+
+# Pre-generate the silent WAV once at module level rather than creating
+# and deleting a temp file every 5 minutes.
+_SILENCE_PATH: str | None = None
+
+
+def _ensure_silence_file() -> str:
+    """Create (once) a tiny silent WAV for keep-warm pings. Returns the path."""
+    global _SILENCE_PATH
+    if _SILENCE_PATH is not None:
+        import os
+        if os.path.exists(_SILENCE_PATH):
+            return _SILENCE_PATH
+
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="voiceclip_keepwarm_", suffix=".wav", delete=False,
+    )
+    silence = np.zeros(8000, dtype=np.float32)  # 0.5s at 16kHz
+    sf.write(tmp.name, silence, 16000)
+    tmp.close()
+    _SILENCE_PATH = tmp.name
+    return _SILENCE_PATH
+
+
+def _keep_warm_loop():
+    """Background loop: transcribe silence every N seconds to keep the
+    model weights resident in memory."""
+    while not _keep_warm_stop.is_set():
+        _keep_warm_stop.wait(_KEEP_WARM_INTERVAL_SECONDS)
+        if _keep_warm_stop.is_set():
+            return
+        try:
+            path = _ensure_silence_file()
+            mlx_whisper.transcribe(
+                path,
+                path_or_hf_repo=_REPO,
+                language="en",
+                no_speech_threshold=0.6,
+            )
+            log.debug("Keep-warm ping completed")
+        except Exception as e:
+            # Swallow — a failed ping just means one potentially slow
+            # dictation, same as before this feature existed.
+            log.debug("Keep-warm ping failed (harmless): %s", e)
+
+
+def start_keep_warm():
+    """Start the background keep-warm thread. Call once after preload_model().
+
+    Idempotent — safe to call multiple times (only one thread runs).
+    """
+    global _keep_warm_thread
+    if _keep_warm_thread is not None and _keep_warm_thread.is_alive():
+        return
+    _keep_warm_stop.clear()
+    _keep_warm_thread = threading.Thread(
+        target=_keep_warm_loop,
+        name="voiceclip-keep-warm",
+        daemon=True,
+    )
+    _keep_warm_thread.start()
+    log.info(
+        "Model keep-warm started (pings every %ds to prevent swap-out)",
+        _KEEP_WARM_INTERVAL_SECONDS,
+    )
+
+
+def stop_keep_warm():
+    """Stop the keep-warm thread. Called on shutdown for clean exit."""
+    global _keep_warm_thread
+    _keep_warm_stop.set()
+    if _keep_warm_thread is not None:
+        _keep_warm_thread.join(timeout=2)
+        _keep_warm_thread = None
+    # Clean up the silence file
+    if _SILENCE_PATH:
+        safe_unlink(_SILENCE_PATH)
