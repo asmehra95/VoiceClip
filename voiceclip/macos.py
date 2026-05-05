@@ -145,7 +145,14 @@ def paste():
 
 
 def notify(title, message):
-    """Show a macOS notification. Non-blocking."""
+    """Show a macOS notification. Non-blocking.
+
+    Currently disabled — notifications were more noise than signal for
+    daily use. The chimes (Tink/Pop/Glass/Funk) provide sufficient
+    audio feedback; error details go to the log. Re-enable by removing
+    the early return below.
+    """
+    return  # disabled — chimes are enough feedback
     safe_msg = message.replace("\n", " ").replace("\r", " ")[:100]
     safe_msg = safe_msg.replace("\\", "\\\\").replace('"', '\\"')
     safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
