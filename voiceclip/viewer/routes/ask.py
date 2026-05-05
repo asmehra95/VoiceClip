@@ -113,13 +113,8 @@ def _post_ask(req, payload):
 
     # Call the LLM
     provider = config.SUMMARIES_PROVIDER
-    if provider == "local":
-        model_id = config.SUMMARIES_LOCAL_MODEL
-    elif provider == "openai":
-        model_id = config.SUMMARIES_OPENAI_MODEL
-    elif provider == "anthropic":
-        model_id = config.SUMMARIES_ANTHROPIC_MODEL
-    else:
+    model_id = config.model_id_for("summaries")
+    if model_id is None:
         req._json({"error": f"unknown provider: {provider}"}, status=400)
         return
 

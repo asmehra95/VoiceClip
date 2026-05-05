@@ -116,13 +116,8 @@ def research_topic(entry_id: int) -> dict | None:
     # Mark as running so the UI can reflect it.
     history.save_brief(entry_id, status="running", provider=provider)
 
-    if provider == "local":
-        model_id = config.RESEARCH_LOCAL_MODEL
-    elif provider == "openai":
-        model_id = config.RESEARCH_OPENAI_MODEL
-    elif provider == "anthropic":
-        model_id = config.RESEARCH_ANTHROPIC_MODEL
-    else:
+    model_id = config.model_id_for("research")
+    if model_id is None:
         history.save_brief(entry_id, status="failed", provider=provider,
                            error=f"unknown provider {provider}")
         return None
