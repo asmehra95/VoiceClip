@@ -166,3 +166,203 @@ def _to_csv(entries: list[dict]) -> str:
 def _now_iso() -> str:
     from datetime import datetime
     return datetime.now().isoformat(timespec="seconds")
+
+
+# ---------------------------------------------------------------------------
+# Import — restore from a JSON export file
+# ---------------------------------------------------------------------------
+
+def import_from_file(path: str, *, merge: bool = True) -> dict:
+    """Import a VoiceClip JSON export into the local database.
+
+    Args:
+        path: path to the JSON file (produced by `voiceclip export`)
+        merge: if True (default), skip rows whose primary key already
+               exists. If False, raise on any conflict.
+
+    Returns a summary dict: {entries, summaries, timelines, briefs} with
+    counts of rows imported per table.
+
+    Raises RuntimeError on format errors or if history isn't initialized.
+    """
+    if history._conn is None:
+        raise RuntimeError("History database not initialized. Run voiceclip first.")
+
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise RuntimeError(f"Could not read export file: {e}") from e
+
+    if not isinstance(data, dict) or "tables" not in data:
+        raise RuntimeError(
+            "Invalid export file — expected a JSON object with a 'tables' key. "
+            "Was this produced by `voiceclip export`?"
+        )
+
+    tables = data["tables"]
+    counts = {"entries": 0, "summaries": 0, "timelines": 0, "briefs": 0}
+
+    # --- Entries ---
+    entries = (tables.get("entries") or {}).get("rows") or []
+    for e in entries:
+        if _entry_exists(e.get("id")):
+            if merge:
+                continue
+            raise RuntimeError(f"Entry id={e['id']} already exists (use --merge to skip)")
+        _insert_entry(e)
+        counts["entries"] += 1
+
+    # --- Day summaries ---
+    summaries = (tables.get("day_summaries") or {}).get("rows") or []
+    for s in summaries:
+        if _summary_exists(s.get("date")):
+            if merge:
+                continue
+            raise RuntimeError(f"Summary for {s['date']} already exists")
+        _insert_summary(s)
+        counts["summaries"] += 1
+
+    # --- Day timelines ---
+    timelines = (tables.get("day_timelines") or {}).get("rows") or []
+    for t in timelines:
+        if _timeline_exists(t.get("date")):
+            if merge:
+                continue
+            raise RuntimeError(f"Timeline for {t['date']} already exists")
+        _insert_timeline(t)
+        counts["timelines"] += 1
+
+    # --- Research briefs ---
+    briefs = (tables.get("research_briefs") or {}).get("rows") or []
+    for b in briefs:
+        if _brief_exists(b.get("id")):
+            if merge:
+                continue
+            raise RuntimeError(f"Brief id={b['id']} already exists")
+        _insert_brief(b)
+        counts["briefs"] += 1
+
+    history._conn.commit()
+    return counts
+
+
+# ---------------------------------------------------------------------------
+# Import helpers — low-level inserts
+# ---------------------------------------------------------------------------
+
+def _entry_exists(entry_id) -> bool:
+    if entry_id is None or history._conn is None:
+        return False
+    row = history._conn.execute(
+        "SELECT 1 FROM transcriptions WHERE id = ?", (entry_id,)
+    ).fetchone()
+    return row is not None
+
+
+def _insert_entry(e: dict):
+    history._conn.execute(
+        "INSERT INTO transcriptions "
+        "(id, timestamp, raw_text, formatted_text, duration_seconds, "
+        " persona, model, word_count, kind, app_name, window_title, "
+        " edited_at, is_research_topic, archived_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            e.get("id"),
+            e.get("timestamp"),
+            e.get("raw_text", ""),
+            e.get("formatted_text", ""),
+            e.get("duration_seconds", 0),
+            e.get("persona"),
+            e.get("model"),
+            e.get("word_count", 0),
+            e.get("kind", "transcription"),
+            e.get("app_name"),
+            e.get("window_title"),
+            e.get("edited_at"),
+            1 if e.get("is_research_topic") else 0,
+            e.get("archived_at"),
+        ),
+    )
+
+
+def _summary_exists(date) -> bool:
+    if date is None or history._conn is None:
+        return False
+    row = history._conn.execute(
+        "SELECT 1 FROM day_summaries WHERE date = ?", (date,)
+    ).fetchone()
+    return row is not None
+
+
+def _insert_summary(s: dict):
+    history._conn.execute(
+        "INSERT INTO day_summaries "
+        "(date, summary, provider, model, style, generated_at, entry_count) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            s.get("date"),
+            s.get("summary", ""),
+            s.get("provider", "unknown"),
+            s.get("model", "unknown"),
+            s.get("style", "descriptive"),
+            s.get("generated_at", ""),
+            s.get("entry_count", 0),
+        ),
+    )
+
+
+def _timeline_exists(date) -> bool:
+    if date is None or history._conn is None:
+        return False
+    row = history._conn.execute(
+        "SELECT 1 FROM day_timelines WHERE date = ?", (date,)
+    ).fetchone()
+    return row is not None
+
+
+def _insert_timeline(t: dict):
+    history._conn.execute(
+        "INSERT INTO day_timelines "
+        "(date, timeline, provider, model, generated_at, entry_count) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            t.get("date"),
+            t.get("timeline", ""),
+            t.get("provider", "unknown"),
+            t.get("model", "unknown"),
+            t.get("generated_at", ""),
+            t.get("entry_count", 0),
+        ),
+    )
+
+
+def _brief_exists(brief_id) -> bool:
+    if brief_id is None or history._conn is None:
+        return False
+    row = history._conn.execute(
+        "SELECT 1 FROM research_briefs WHERE id = ?", (brief_id,)
+    ).fetchone()
+    return row is not None
+
+
+def _insert_brief(b: dict):
+    sources = b.get("sources") or []
+    history._conn.execute(
+        "INSERT INTO research_briefs "
+        "(id, entry_id, status, brief_text, sources_json, provider, "
+        " model, used_web_search, generated_at, error) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            b.get("id"),
+            b.get("entry_id"),
+            b.get("status", "done"),
+            b.get("brief_text"),
+            json.dumps(sources) if sources else None,
+            b.get("provider"),
+            b.get("model"),
+            1 if b.get("used_web_search") else 0,
+            b.get("generated_at"),
+            b.get("error"),
+        ),
+    )
