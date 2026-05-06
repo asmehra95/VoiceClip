@@ -85,6 +85,13 @@ def _build_parser() -> argparse.ArgumentParser:
     # doctor subcommand — system health check
     sub.add_parser("doctor", help="Run a health check on your VoiceClip setup")
 
+    # export subcommand — full data dump
+    exp = sub.add_parser("export", help="Export all history data (JSON or CSV)")
+    exp.add_argument("--format", choices=["json", "csv"], default="json",
+                     help="Output format (default: json)")
+    exp.add_argument("--output", "-o", type=str, metavar="PATH",
+                     help="Write to file instead of stdout")
+
     # onboard subcommand — re-run the first-run walkthrough
     sub.add_parser("onboard", help="Run (or re-run) the first-launch walkthrough")
 
@@ -236,6 +243,29 @@ def _handle_summarize(args):
     for line in result["summary"].splitlines() or [result["summary"]]:
         print(f"    {line}")
     print()
+
+
+def _handle_export(args):
+    """Handle the export subcommand — full data dump."""
+    from voiceclip import config
+    config.load()
+
+    if not config.HISTORY_ENABLED:
+        print("History is not enabled. Nothing to export.")
+        sys.exit(0)
+
+    from voiceclip.history import init
+    init()
+
+    from voiceclip.export import export_all
+    data = export_all(fmt=args.format)
+
+    if args.output:
+        with open(args.output, "w") as f:
+            f.write(data)
+        print(f"  Exported to {args.output}")
+    else:
+        print(data)
 
 
 def _handle_view(args):
@@ -547,6 +577,8 @@ def main():
     elif args.command == "doctor":
         from voiceclip.doctor import run as run_doctor
         sys.exit(run_doctor())
+    elif args.command == "export":
+        _handle_export(args)
     elif args.command == "onboard":
         from voiceclip.onboard import run as run_onboard
         run_onboard(force=True)
