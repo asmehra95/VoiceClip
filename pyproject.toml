@@ -135,6 +135,7 @@ ignore = [
 # A context manager would destroy it before the consumer can read it.
 "voiceclip/recorder.py" = ["SIM115"]
 "voiceclip/transcriber.py" = ["SIM115"]
+"tests/test_export_import.py" = ["SIM115"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["voiceclip"]
