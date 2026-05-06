@@ -92,6 +92,12 @@ def _build_parser() -> argparse.ArgumentParser:
     exp.add_argument("--output", "-o", type=str, metavar="PATH",
                      help="Write to file instead of stdout")
 
+    # import subcommand — restore from a JSON export
+    imp = sub.add_parser("import", help="Import history from a JSON export file")
+    imp.add_argument("file", type=str, help="Path to the JSON export file")
+    imp.add_argument("--no-merge", action="store_true",
+                     help="Fail on conflicts instead of skipping existing rows")
+
     # onboard subcommand — re-run the first-run walkthrough
     sub.add_parser("onboard", help="Run (or re-run) the first-launch walkthrough")
 
@@ -266,6 +272,39 @@ def _handle_export(args):
         print(f"  Exported to {args.output}")
     else:
         print(data)
+
+
+def _handle_import(args):
+    """Handle the import subcommand — restore from a JSON export."""
+    from voiceclip import config
+    config.load()
+
+    # Import needs history enabled so the DB exists and is initialized.
+    # If it's off, turn it on temporarily for the import — the user
+    # clearly wants their data here.
+    from voiceclip.history import init
+    init()
+
+    from voiceclip.export import import_from_file
+    try:
+        counts = import_from_file(args.file, merge=not args.no_merge)
+    except RuntimeError as e:
+        print(f"  ❌ {e}")
+        sys.exit(1)
+
+    total = sum(counts.values())
+    if total == 0:
+        print("  Nothing new to import (all rows already exist).")
+    else:
+        print(f"  ✅ Imported {total} rows:")
+        if counts["entries"]:
+            print(f"     {counts['entries']} entries")
+        if counts["summaries"]:
+            print(f"     {counts['summaries']} day summaries")
+        if counts["timelines"]:
+            print(f"     {counts['timelines']} day timelines")
+        if counts["briefs"]:
+            print(f"     {counts['briefs']} research briefs")
 
 
 def _handle_view(args):
@@ -579,6 +618,8 @@ def main():
         sys.exit(run_doctor())
     elif args.command == "export":
         _handle_export(args)
+    elif args.command == "import":
+        _handle_import(args)
     elif args.command == "onboard":
         from voiceclip.onboard import run as run_onboard
         run_onboard(force=True)
