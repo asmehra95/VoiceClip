@@ -216,6 +216,7 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
         "type": "text_list",
         "restart_required": True,
         "placeholder": "One per line (names, jargon, acronyms)",
+        "visible_when": {"engine": "whisper"},
     },
 }
 

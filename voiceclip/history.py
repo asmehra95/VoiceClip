@@ -277,7 +277,8 @@ def save(
         if _conn is None:
             return None
         with _write_lock:
-            from voiceclip.config import MODEL, PERSONA
+            from voiceclip.config import ENGINE, MODEL, PARAKEET_MODEL, PERSONA
+            active_model = PARAKEET_MODEL if ENGINE == "parakeet" else MODEL
             cur = _conn.execute(
                 "INSERT INTO transcriptions "
                 "(timestamp, raw_text, formatted_text, duration_seconds, "
@@ -290,7 +291,7 @@ def save(
                     formatted_text,
                     round(duration, 1),
                     PERSONA,
-                    MODEL,
+                    active_model,
                     len(formatted_text.split()),
                     kind,
                     app_name,

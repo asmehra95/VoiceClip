@@ -139,15 +139,15 @@ def _recorder_loop(conn):
             _stream_box[0] = None
             return False
 
-    def _check_device_change():
+    def _check_device_change() -> bool:
         """If the default input device changed, or the stream has gone
         stale (no callbacks in _STREAM_STALE_SECONDS), reopen.
-        Called on every START command.
+        Called on every START command. Returns False if the stream is dead.
         """
         try:
             current_default = sd.default.device[0]
         except Exception:
-            return  # can't query — keep current stream
+            return _stream_box[0] is not None
 
         device_changed = current_default != _active_device[0]
         stream_stale = (
@@ -161,7 +161,8 @@ def _recorder_loop(conn):
                 "Reopening stream on new device...",
                 flush=True,
             )
-            _open_stream(force_device=current_default)
+            if not _open_stream(force_device=current_default):
+                return False
         elif stream_stale:
             print(
                 "[recorder] ⚠️  Audio stream stale (no callbacks in "
@@ -169,7 +170,10 @@ def _recorder_loop(conn):
                 "Reopening stream...",
                 flush=True,
             )
-            _open_stream(force_device=current_default)
+            if not _open_stream(force_device=current_default):
+                return False
+
+        return True
 
     # Initialize mutable state used by callback before defining it
     need_resample = False
@@ -246,7 +250,10 @@ def _recorder_loop(conn):
             # This catches AirPods connect/disconnect, Bluetooth HFP
             # switches, and other mid-session device changes that would
             # otherwise cause the stream to capture silence.
-            _check_device_change()
+            if not _check_device_change():
+                print("[recorder] ⚠️  No audio stream available", flush=True)
+                conn.send("error:no_stream")
+                continue
 
             with frames_lock:
                 frames.clear()
@@ -420,8 +427,10 @@ class Recorder:
                 raise RuntimeError(f"Recorder died: {e}") from e
 
     def begin(self):
-        """Start capturing audio."""
-        self._send_recv(RecorderCmd.START, timeout=3)
+        """Start capturing audio. Raises RuntimeError if the stream is dead."""
+        resp = self._send_recv(RecorderCmd.START, timeout=3)
+        if isinstance(resp, str) and resp.startswith("error:"):
+            raise RuntimeError(f"Recorder: {resp}")
 
     def end(self):
         """Stop capturing and return the WAV file path, or None."""
