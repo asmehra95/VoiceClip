@@ -34,6 +34,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Parakeet ASR engine — only needed when engine is set to "parakeet".
+parakeet = [
+    "parakeet-mlx>=0.5",
+]
 # Cloud LLM providers — only needed if the user flips summaries.provider
 # / research.provider / patterns.provider to "openai" or "anthropic".
 cloud = [

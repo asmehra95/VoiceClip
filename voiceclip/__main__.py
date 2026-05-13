@@ -26,15 +26,25 @@ def setup_logging():
 
 def _check_dependencies():
     """Verify critical dependencies are importable."""
+    from voiceclip import config
+    base_deps = ["sounddevice", "soundfile", "pynput", "numpy"]
+    if config.ENGINE == "parakeet":
+        base_deps.append("parakeet_mlx")
+    else:
+        base_deps.append("mlx_whisper")
+
     missing = []
-    for mod in ("sounddevice", "soundfile", "mlx_whisper", "pynput", "numpy"):
+    for mod in base_deps:
         try:
             __import__(mod)
         except ImportError:
             missing.append(mod)
     if missing:
         print(f"❌ Missing dependencies: {', '.join(missing)}")
-        print("   Run: pip install -r requirements.txt")
+        if "parakeet_mlx" in missing:
+            print("   Run: pip install parakeet-mlx")
+        else:
+            print("   Run: pip install -r requirements.txt")
         sys.exit(1)
 
 
@@ -330,10 +340,10 @@ def _run_voiceclip():
     """Main recording mode."""
     multiprocessing.set_start_method("spawn", force=True)
     setup_logging()
-    _check_dependencies()
 
     from voiceclip import config
     config.load()
+    _check_dependencies()
     config.validate()
 
     # First-run walkthrough, if the user hasn't been through it yet.
@@ -360,7 +370,11 @@ def _run_voiceclip():
     print(f"  🎙️  VoiceClip v{__version__}")
     print("  Local voice → clipboard on Apple Silicon")
     print("=" * 50)
-    print(f"\n  Model:        {config.MODEL}")
+    print(f"\n  Engine:       {config.ENGINE}")
+    if config.ENGINE == "parakeet":
+        print(f"  Model:        {config.PARAKEET_MODEL}")
+    else:
+        print(f"  Model:        {config.MODEL}")
     print(f"  English only: {config.ENGLISH_ONLY}")
     print(f"  Persona:      {config.PERSONA}")
     print(f"  Hotkey:       {config.hotkey_display_name()} ({config.HOTKEY_MODE} mode)")
@@ -463,7 +477,10 @@ def _run_voiceclip():
         sys.exit(1)
     print("  ✅ Recorder ready")
 
-    print("\n  Preloading Whisper model (first run downloads ~3 GB)...")
+    if config.ENGINE == "parakeet":
+        print("\n  Preloading Parakeet model (first run downloads ~1-4 GB)...")
+    else:
+        print("\n  Preloading Whisper model (first run downloads ~3 GB)...")
     preload_model()
     print("  ✅ Model ready")
     start_keep_warm()
@@ -520,6 +537,34 @@ def _run_voiceclip():
         reflection_handler.start()
         handlers.append(reflection_handler)
 
+    # Polish hotkey — LLM-cleaned dictation. Requires a summaries provider.
+    polish_active = False
+    if config.POLISH_HOTKEY:
+        used_keys = {config.HOTKEY.strip().lower()}
+        if config.REFLECTION_HOTKEY:
+            used_keys.add(config.REFLECTION_HOTKEY.strip().lower())
+        if config.POLISH_HOTKEY.strip().lower() in used_keys:
+            log.error(
+                "polish_hotkey '%s' collides with another hotkey; disabled",
+                config.POLISH_HOTKEY,
+            )
+        else:
+            polish_key_obj = config.resolve_hotkey(config.POLISH_HOTKEY)
+            polish_handler = HotkeyHandler(
+                recorder,
+                hotkey=polish_key_obj,
+                mode=config.POLISH_HOTKEY_MODE,
+                profile="polished",
+                start_sound="Tink",
+                done_sound="Hero",
+                label="VoiceClip ✨",
+            )
+            polish_handler.start()
+            handlers.append(polish_handler)
+            polish_active = True
+            pname = config.hotkey_display_name(config.POLISH_HOTKEY)
+            print(f"  ✨  Hold {pname} to dictate with LLM polish ({config.POLISH_HOTKEY_MODE} mode)")
+
     # Validate the hotkey listener actually registered with macOS.
     # pynput's `Listener.start()` returns immediately but the underlying
     # CFRunLoop only checks AXIsProcessTrusted (Accessibility grant) on
@@ -530,6 +575,8 @@ def _run_voiceclip():
     _validate_hotkey_listener(transcription_handler, "transcription")
     if reflection_active:
         _validate_hotkey_listener(reflection_handler, "reflection")
+    if polish_active:
+        _validate_hotkey_listener(polish_handler, "polished")
 
     try:
         while True:

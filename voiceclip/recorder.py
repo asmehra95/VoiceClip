@@ -54,41 +54,140 @@ def _recorder_loop(conn):
     _rms_sum = [0.0]
     _rms_count = [0]
 
-    try:
-        default_dev = sd.default.device[0]
-        dev_info = sd.query_devices(default_dev)
-        native_sr = int(dev_info["default_samplerate"])
-        dev_name = dev_info.get("name", "Unknown")
-        print(
-            f"[recorder] Device: {dev_name} (idx={default_dev}, "
-            f"sr={native_sr}Hz, ch={dev_info['max_input_channels']})",
-            flush=True,
-        )
-        if native_sr < 16000:
+    # Track the active device so we can detect mid-session switches.
+    # macOS can silently change the default input device (e.g. AirPods
+    # connect/disconnect, phone call starts) — when that happens the old
+    # stream keeps running but receives silence. We check on every START
+    # and reopen the stream if the default device changed.
+    _active_device = [None]  # [device_index]
+    _stream_box = [None]     # [sd.InputStream]
+    _native_sr_box = [0]
+    _need_resample_box = [False]
+    _resample_ratio_box = [1.0]
+    _max_samples_box = [0]
+
+    # Timestamp of the last callback invocation. Used to detect streams
+    # that are "open" but no longer receiving audio (e.g. after macOS
+    # sleep/wake). If the callback hasn't fired in a while, we force a
+    # stream reopen on the next START.
+    import time as _time
+    _last_callback_time = [_time.time()]
+    _STREAM_STALE_SECONDS = 30  # if no callback in this window, stream is dead
+
+    def _open_stream(force_device=None):
+        """Open (or reopen) the input stream on the current default device.
+
+        Returns True on success, False on failure. Updates all the
+        mutable state boxes that the callback and STOP handler read.
+        """
+        nonlocal need_resample, resample_ratio, max_samples
+
+        try:
+            target_dev = force_device if force_device is not None else sd.default.device[0]
+            dev_info = sd.query_devices(target_dev)
+            native_sr = int(dev_info["default_samplerate"])
+            dev_name = dev_info.get("name", "Unknown")
             print(
-                f"[recorder] ⚠️  Low sample rate ({native_sr}Hz). "
-                "Bluetooth HFP mode? Audio quality will be degraded. "
-                "Consider using the MacBook mic instead.",
+                f"[recorder] Device: {dev_name} (idx={target_dev}, "
+                f"sr={native_sr}Hz, ch={dev_info['max_input_channels']})",
                 flush=True,
             )
-    except Exception as e:
-        conn.send(f"error:device_query:{e}")
-        return
+            if native_sr < 16000:
+                print(
+                    f"[recorder] ⚠️  Low sample rate ({native_sr}Hz). "
+                    "Bluetooth HFP mode? Audio quality will be degraded. "
+                    "Consider using the MacBook mic instead.",
+                    flush=True,
+                )
+        except Exception as e:
+            print(f"[recorder] ⚠️  Device query failed: {e}", flush=True)
+            return False
 
-    # Pre-compute resampling indices once (ratio is constant for this device)
-    need_resample = native_sr != SAMPLE_RATE
-    resample_ratio = SAMPLE_RATE / native_sr if need_resample else 1.0
-    # Frame cap derived from the duration cap at the native sample rate.
-    # Computed once — comparison in the callback is a single integer compare.
-    max_samples = int(MAX_RECORDING_SECONDS * native_sr)
+        # Close old stream if any
+        old_stream = _stream_box[0]
+        if old_stream is not None:
+            try:
+                old_stream.stop()
+                old_stream.close()
+            except Exception:
+                pass
+
+        # Update resampling state
+        need_resample = native_sr != SAMPLE_RATE
+        resample_ratio = SAMPLE_RATE / native_sr if need_resample else 1.0
+        max_samples = int(MAX_RECORDING_SECONDS * native_sr)
+
+        _native_sr_box[0] = native_sr
+        _need_resample_box[0] = need_resample
+        _resample_ratio_box[0] = resample_ratio
+        _max_samples_box[0] = max_samples
+        _active_device[0] = target_dev
+
+        try:
+            new_stream = sd.InputStream(
+                samplerate=native_sr,
+                channels=1,
+                dtype="float32",
+                device=target_dev,
+                callback=callback,
+            )
+            new_stream.start()
+            _stream_box[0] = new_stream
+            return True
+        except Exception as e:
+            print(f"[recorder] ⚠️  Stream open failed: {e}", flush=True)
+            _stream_box[0] = None
+            return False
+
+    def _check_device_change():
+        """If the default input device changed, or the stream has gone
+        stale (no callbacks in _STREAM_STALE_SECONDS), reopen.
+        Called on every START command.
+        """
+        try:
+            current_default = sd.default.device[0]
+        except Exception:
+            return  # can't query — keep current stream
+
+        device_changed = current_default != _active_device[0]
+        stream_stale = (
+            _time.time() - _last_callback_time[0] > _STREAM_STALE_SECONDS
+        )
+
+        if device_changed:
+            print(
+                f"[recorder] ⚠️  Default input device changed "
+                f"({_active_device[0]} → {current_default}). "
+                "Reopening stream on new device...",
+                flush=True,
+            )
+            _open_stream(force_device=current_default)
+        elif stream_stale:
+            print(
+                "[recorder] ⚠️  Audio stream stale (no callbacks in "
+                f"{_STREAM_STALE_SECONDS}s — likely sleep/wake). "
+                "Reopening stream...",
+                flush=True,
+            )
+            _open_stream(force_device=current_default)
+
+    # Initialize mutable state used by callback before defining it
+    need_resample = False
+    resample_ratio = 1.0
+    max_samples = int(MAX_RECORDING_SECONDS * SAMPLE_RATE)
+
     # Log a warning exactly once per recording when the cap trips.
     _cap_hit = [False]
 
     def callback(indata, frame_count, time_info, status):
+        _last_callback_time[0] = _time.time()
+        if status:
+            # sounddevice reports input overflow, device disconnected, etc.
+            print(f"[recorder] ⚠️  Stream status: {status}", flush=True)
         if rec_event.is_set():
             with _rms_lock:
                 already = _rms_count[0]
-            if already >= max_samples:
+            if already >= _max_samples_box[0]:
                 if not _cap_hit[0]:
                     _cap_hit[0] = True
                     print(
@@ -106,18 +205,18 @@ def _recorder_loop(conn):
                 _rms_sum[0] += sq_sum
                 _rms_count[0] += indata.shape[0]
 
+    # Initial stream open
     try:
-        stream = sd.InputStream(
-            samplerate=native_sr,
-            channels=1,
-            dtype="float32",
-            device=default_dev,
-            callback=callback,
-        )
-        stream.start()
+        default_dev = sd.default.device[0]
     except Exception as e:
-        conn.send(f"error:stream_open:{e}")
+        conn.send(f"error:device_query:{e}")
         return
+
+    if not _open_stream(force_device=default_dev):
+        conn.send(f"error:stream_open:could not open initial stream")
+        return
+
+    native_sr = _native_sr_box[0]
 
     conn.send("ready")
 
@@ -143,6 +242,12 @@ def _recorder_loop(conn):
                 continue
 
         if msg == RecorderCmd.START:
+            # Check if the default device changed since last recording.
+            # This catches AirPods connect/disconnect, Bluetooth HFP
+            # switches, and other mid-session device changes that would
+            # otherwise cause the stream to capture silence.
+            _check_device_change()
+
             with frames_lock:
                 frames.clear()
             with _rms_lock:
@@ -175,7 +280,9 @@ def _recorder_loop(conn):
             else:
                 rms = 0.0
 
-            duration_native = total_samples / native_sr
+            # Use the current native_sr (may have changed if device switched)
+            cur_native_sr = _native_sr_box[0]
+            duration_native = total_samples / cur_native_sr if cur_native_sr > 0 else 0.0
             print(
                 f"[recorder] STOP: {len(captured)} frames, "
                 f"{duration_native:.2f}s, RMS={rms:.6f}, "
@@ -192,9 +299,11 @@ def _recorder_loop(conn):
             audio = np.concatenate(captured, axis=0).flatten()
 
             # Resample to 16kHz if needed (linear interpolation)
-            if need_resample:
-                new_len = int(math.ceil(len(audio) * resample_ratio))
-                old_idx = np.arange(new_len) / resample_ratio
+            cur_need_resample = _need_resample_box[0]
+            cur_resample_ratio = _resample_ratio_box[0]
+            if cur_need_resample:
+                new_len = int(math.ceil(len(audio) * cur_resample_ratio))
+                old_idx = np.arange(new_len) / cur_resample_ratio
                 old_idx = np.clip(old_idx, 0, len(audio) - 1)
                 floor_idx = np.floor(old_idx).astype(np.int32)
                 ceil_idx = np.minimum(floor_idx + 1, len(audio) - 1)
@@ -215,11 +324,13 @@ def _recorder_loop(conn):
         elif msg == RecorderCmd.QUIT:
             break
 
-    try:
-        stream.stop()
-        stream.close()
-    except Exception:
-        pass
+    stream = _stream_box[0]
+    if stream is not None:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

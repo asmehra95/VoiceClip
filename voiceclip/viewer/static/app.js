@@ -1451,7 +1451,9 @@
 
   // Plain-language labels and descriptions. Keyed by dotted config key.
   const SETTING_COPY = {
+    "engine":                  ["ASR engine", "Whisper (default) or Parakeet (NVIDIA). Parakeet requires: pip install parakeet-mlx"],
     "model":                   ["Whisper model", "Larger models are more accurate but slower. Turbo is the sweet spot on Apple Silicon. Tiny / base are fast; large-v3 is highest quality."],
+    "parakeet_model":          ["Parakeet model", "TDT-0.6b-v3 is best speed/quality. Larger models are more accurate but use more memory."],
     "hotkey":                  ["Hotkey", "Key to hold/press for dictation"],
     "hotkey_mode":             ["Hotkey mode", "Hold to record, or tap to toggle"],
     "english_only":            ["English only", "Faster and smaller if all your dictation is English"],
@@ -1518,14 +1520,19 @@
       groups[g].push(key);
     }
 
-    const order = ["Dictation", "Reflections", "Journal", "Summaries", "Research", "Patterns"];
+    const order = ["Dictation", "Reflections", "Polish", "Journal", "Summaries", "Research", "Patterns"];
     for (const gname of order) {
       if (!groups[gname]) continue;
       const groupEl = el("div", {class:"setting-group"}, [
         el("h3", null, gname),
       ]);
       for (const key of groups[gname]) {
-        groupEl.appendChild(renderSettingRow(key, data.schema[key], data.values[key]));
+        const s = data.schema[key];
+        if (s.visible_when) {
+          const condKey = Object.keys(s.visible_when)[0];
+          if (data.values[condKey] !== s.visible_when[condKey]) continue;
+        }
+        groupEl.appendChild(renderSettingRow(key, s, data.values[key]));
       }
       slot.appendChild(groupEl);
     }

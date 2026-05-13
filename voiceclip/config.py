@@ -58,6 +58,17 @@ MODELS = {
 
 VALID_MODELS = ("tiny", "base", "small", "medium", "large-v3-turbo", "large-v3")
 
+# Parakeet models via parakeet-mlx — mlx-community HuggingFace repos.
+PARAKEET_MODELS = {
+    "parakeet-tdt-0.6b-v3": "mlx-community/parakeet-tdt-0.6b-v3",
+    "parakeet-tdt-1.1b": "mlx-community/parakeet-tdt-1.1b",
+    "parakeet-ctc-1.1b": "mlx-community/parakeet-ctc-1.1b",
+    "parakeet-ctc-0.6b": "mlx-community/parakeet-ctc-0.6b",
+    "parakeet-rnnt-1.1b": "mlx-community/parakeet-rnnt-1.1b",
+}
+
+VALID_ENGINES = ("whisper", "parakeet")
+
 
 # ---------------------------------------------------------------------------
 # Config file path
@@ -120,7 +131,9 @@ _DEFAULT_CONFIG = {
 
 # These are the "live" values used by all modules.
 # Set by load() at startup, overridable by env vars.
+ENGINE = "whisper"  # "whisper" or "parakeet"
 MODEL = "large-v3-turbo"
+PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 ENGLISH_ONLY = True
 PERSONA = "default"
 HOTKEY = "alt_r"
@@ -133,6 +146,17 @@ HISTORY_MAX_DAYS = 30
 REFLECTION_HOTKEY: str | None = None
 REFLECTION_HOTKEY_MODE = "hold"
 REFLECTION_MAX_DAYS = 0  # 0 = never auto-delete reflections
+
+# Polish — third hotkey that transcribes then runs the text through a local
+# LLM for cleanup (grammar, structure, filler removal) before pasting.
+# Off unless POLISH_HOTKEY is set in config or env.
+POLISH_HOTKEY: str | None = None
+POLISH_HOTKEY_MODE = "hold"
+POLISH_PROMPT = (
+    "Clean up this dictated text. Fix grammar, remove filler words (um, uh, like), "
+    "add proper punctuation, and structure into clear sentences or paragraphs. "
+    "Keep the original meaning and tone. Output only the cleaned text, nothing else."
+)
 
 # Summaries — LLM-generated daily recaps. Off ("none") by default.
 # Provider: "none" | "local" | "openai" | "anthropic"
@@ -242,10 +266,11 @@ def load():
 
     Call this once at startup. Sets all module-level config variables.
     """
-    global MODEL, ENGLISH_ONLY, PERSONA, DICTIONARY, INITIAL_PROMPT
+    global ENGINE, MODEL, PARAKEET_MODEL, ENGLISH_ONLY, PERSONA, DICTIONARY, INITIAL_PROMPT
     global CUSTOM_VOCABULARY
     global HOTKEY, HOTKEY_MODE, HISTORY_ENABLED, HISTORY_MAX_DAYS, _raw
     global REFLECTION_HOTKEY, REFLECTION_HOTKEY_MODE, REFLECTION_MAX_DAYS
+    global POLISH_HOTKEY, POLISH_HOTKEY_MODE, POLISH_PROMPT
     global SUMMARIES_PROVIDER, SUMMARIES_LOCAL_MODEL
     global SUMMARIES_OPENAI_MODEL, SUMMARIES_ANTHROPIC_MODEL, SUMMARIES_STYLE
     global RESEARCH_PROVIDER, RESEARCH_LOCAL_MODEL
@@ -275,7 +300,18 @@ def load():
     _raw = cfg
 
     # Apply env var overrides (env vars always win)
+    ENGINE = os.environ.get("VOICECLIP_ENGINE", cfg.get("engine", "whisper"))
+    if ENGINE not in VALID_ENGINES:
+        log.warning("Invalid engine '%s', using 'whisper'", ENGINE)
+        ENGINE = "whisper"
+
     MODEL = os.environ.get("VOICECLIP_MODEL", cfg.get("model", "large-v3-turbo"))
+
+    PARAKEET_MODEL = os.environ.get(
+        "VOICECLIP_PARAKEET_MODEL",
+        cfg.get("parakeet_model", "mlx-community/parakeet-tdt-0.6b-v3"),
+    )
+
     ENGLISH_ONLY = os.environ.get(
         "VOICECLIP_ENGLISH_ONLY",
         str(cfg.get("english_only", True))
@@ -318,6 +354,25 @@ def load():
         REFLECTION_MAX_DAYS = 0
     if REFLECTION_MAX_DAYS < 0:
         REFLECTION_MAX_DAYS = 0
+
+    # Polish hotkey — optional third hotkey for LLM-cleaned dictation
+    POLISH_HOTKEY = os.environ.get(
+        "VOICECLIP_POLISH_HOTKEY",
+        cfg.get("polish_hotkey") or None,
+    )
+    if POLISH_HOTKEY is not None and not str(POLISH_HOTKEY).strip():
+        POLISH_HOTKEY = None
+    POLISH_HOTKEY_MODE = os.environ.get(
+        "VOICECLIP_POLISH_HOTKEY_MODE",
+        cfg.get("polish_hotkey_mode", "hold"),
+    )
+    if POLISH_HOTKEY_MODE not in ("hold", "toggle"):
+        log.warning("Invalid polish_hotkey_mode '%s', using 'hold'", POLISH_HOTKEY_MODE)
+        POLISH_HOTKEY_MODE = "hold"
+    POLISH_PROMPT = cfg.get(
+        "polish_prompt",
+        POLISH_PROMPT,  # keep the module-level default if not in config
+    )
 
     # Summaries / Research / Patterns — three features with identical
     # provider + model loading shape. Collapsed into a helper to avoid
@@ -424,10 +479,17 @@ def load():
 
 def validate():
     """Validate configuration at startup. Exits on error."""
-    if MODEL not in VALID_MODELS:
-        print(f"Unknown model: {MODEL}")
+    if ENGINE == "whisper" and MODEL not in VALID_MODELS:
+        print(f"Unknown Whisper model: {MODEL}")
         print(f"Valid options: {', '.join(VALID_MODELS)}")
         sys.exit(1)
+    if ENGINE == "parakeet":
+        known = set(PARAKEET_MODELS.values())
+        if PARAKEET_MODEL not in known and not PARAKEET_MODEL.startswith("mlx-community/parakeet-"):
+            valid_names = list(PARAKEET_MODELS.values())
+            print(f"Unknown Parakeet model: {PARAKEET_MODEL}")
+            print(f"Valid options: {', '.join(valid_names)}")
+            sys.exit(1)
 
 
 def get_model_repo():
