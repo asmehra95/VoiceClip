@@ -280,7 +280,7 @@ class HotkeyHandler:
             self._release_gate()
 
     def _deliver(self, raw_text: str, text: str, elapsed: float):
-        """Profile-specific delivery: paste-and-save vs save-only."""
+        """Profile-specific delivery: paste-and-save vs save-only vs polish-then-paste."""
         app_name = self._captured_app
         self._captured_app = None  # reset
 
@@ -296,11 +296,28 @@ class HotkeyHandler:
             beep(self._done_sound)
             preview = text[:50] + ("..." if len(text) > 50 else "")
             log.info("Reflection saved (%d chars, %.1fs): %r", len(text), elapsed, preview)
-            # Do NOT include text in the notification — reflections are private.
             notify(f"{self._label} ✍️", "Reflection saved")
             return
 
-        # Default: transcription profile.
+        if self._profile == "polished":
+            # Run through LLM for cleanup before pasting.
+            from voiceclip.polisher import polish
+            polished = polish(text)
+            if HISTORY_ENABLED:
+                from voiceclip.history import save as save_history
+                save_history(
+                    raw_text, polished, elapsed,
+                    kind="transcription",
+                    app_name=app_name,
+                )
+            copy_paste_and_restore(polished)
+            beep(self._done_sound)
+            preview = polished[:150] + ("..." if len(polished) > 150 else "")
+            log.info("Polished %d→%d chars in %.1fs", len(text), len(polished), elapsed)
+            log.info('Text: "%s"', preview)
+            return
+
+        # Default: transcription profile — paste raw formatted text.
         if HISTORY_ENABLED:
             from voiceclip.history import save as save_history
             save_history(
@@ -313,9 +330,6 @@ class HotkeyHandler:
         preview = text[:150] + ("..." if len(text) > 150 else "")
         log.info("Copied %d chars in %.1fs", len(text), elapsed)
         log.info('Text: "%s"', preview)
-        # No success notification — the pasted text itself is the confirmation,
-        # and the Glass chime tells you the copy happened. Notifications here
-        # are just noise in Notification Center.
 
     def _discard_recording(self):
         """Clean up a too-short recording in the background."""

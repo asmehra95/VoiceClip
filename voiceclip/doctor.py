@@ -109,7 +109,7 @@ def _check_system(r: Report):
         "Apple Silicon",
         is_arm,
         detail_ok=platform.machine(),
-        detail_fail=f"detected {platform.machine()}; Whisper runs on GPU only on arm64",
+        detail_fail=f"detected {platform.machine()}; MLX ASR runs on GPU only on arm64",
     )
     py = sys.version_info
     py_ok = py >= (3, 10)
@@ -241,6 +241,12 @@ def _check_optional_providers(r: Report):
                    f"~/.voiceclip/.venv/bin/pip install {name}")
             r.fail += 1
 
+    # parakeet-mlx needed if engine is set to "parakeet"
+    if config.ENGINE == "parakeet":
+        _check_pkg("parakeet-mlx", "parakeet_mlx")
+    else:
+        r.note("parakeet-mlx", "not needed (engine=whisper)")
+
     # mlx-lm needed if any *_local provider is configured
     local_in_use = (
         config.SUMMARIES_PROVIDER == "local"
@@ -320,8 +326,13 @@ def _check_caches(r: Report):
 
 def _print_config(r: Report):
     print("\n  Active config")
+    if config.ENGINE == "parakeet":
+        model_display = config.PARAKEET_MODEL
+    else:
+        model_display = config.MODEL
     items = [
-        ("model", config.MODEL),
+        ("engine", config.ENGINE),
+        ("model", model_display),
         ("english_only", config.ENGLISH_ONLY),
         ("hotkey", f"{config.HOTKEY} ({config.HOTKEY_MODE})"),
         ("reflection_hotkey",

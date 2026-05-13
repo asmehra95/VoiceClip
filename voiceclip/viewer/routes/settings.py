@@ -31,15 +31,30 @@ log = logging.getLogger(__name__)
 
 _SETTINGS_SCHEMA: dict[str, dict] = {
     # Dictation
+    "engine": {
+        "group": "Dictation",
+        "type": "select",
+        "restart_required": True,
+        "choices": ["whisper", "parakeet"],
+    },
     "model": {
         "group": "Dictation",
         "type": "select",
         "restart_required": True,
-        # Mirrors config.VALID_MODELS — keep in sync if that list changes.
-        # `large-v3-turbo` is the default and best speed/quality balance on
-        # Apple Silicon; tiny/base are speed-first, large-v3 is quality-first.
         "choices": ["tiny", "base", "small", "medium",
                     "large-v3-turbo", "large-v3"],
+        "visible_when": {"engine": "whisper"},
+    },
+    "parakeet_model": {
+        "group": "Dictation",
+        "type": "select",
+        "restart_required": True,
+        "choices": ["mlx-community/parakeet-tdt-0.6b-v3",
+                    "mlx-community/parakeet-tdt-1.1b",
+                    "mlx-community/parakeet-ctc-1.1b",
+                    "mlx-community/parakeet-ctc-0.6b",
+                    "mlx-community/parakeet-rnnt-1.1b"],
+        "visible_when": {"engine": "parakeet"},
     },
     "hotkey": {
         "group": "Dictation",
@@ -60,6 +75,7 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
         "group": "Dictation",
         "type": "bool",
         "restart_required": True,
+        "visible_when": {"engine": "whisper"},
     },
 
     # Reflections
@@ -82,6 +98,28 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
         "group": "Reflections",
         "type": "bool",
         "restart_required": True,
+    },
+
+    # Polish
+    "polish_hotkey": {
+        "group": "Polish",
+        "type": "select_or_none",
+        "restart_required": True,
+        "choices": ["alt_r", "alt_l", "ctrl_r", "ctrl_l", "shift_r", "shift_l",
+                    "cmd_r", "cmd_l", "caps_lock", "f1", "f2", "f3", "f4",
+                    "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+                    "space", "esc"],
+    },
+    "polish_hotkey_mode": {
+        "group": "Polish",
+        "type": "select",
+        "restart_required": True,
+        "choices": ["hold", "toggle"],
+    },
+    "polish_prompt": {
+        "group": "Polish",
+        "type": "text",
+        "placeholder": "Clean up this dictated text. Fix grammar...",
     },
 
     # Journal (history)
@@ -189,13 +227,18 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
 def _runtime_value(key: str):
     """Read the current runtime value for a dotted config key."""
     mapping = {
+        "engine": config.ENGINE,
         "model": config.MODEL,
+        "parakeet_model": config.PARAKEET_MODEL,
         "hotkey": config.HOTKEY,
         "hotkey_mode": config.HOTKEY_MODE,
         "english_only": config.ENGLISH_ONLY,
         "reflection_hotkey": config.REFLECTION_HOTKEY,
         "reflection_hotkey_mode": config.REFLECTION_HOTKEY_MODE,
         "window_title_capture": False,  # not currently in runtime config; default
+        "polish_hotkey": config.POLISH_HOTKEY,
+        "polish_hotkey_mode": config.POLISH_HOTKEY_MODE,
+        "polish_prompt": config.POLISH_PROMPT,
         "history": config.HISTORY_ENABLED,
         "summaries.provider": config.SUMMARIES_PROVIDER,
         "summaries.local_model": config.SUMMARIES_LOCAL_MODEL,
