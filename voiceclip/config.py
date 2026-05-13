@@ -468,13 +468,6 @@ def load():
 
     INITIAL_PROMPT = ". ".join(prompt_parts)[:500] if prompt_parts else None
 
-    log.info(
-        "Config loaded: model=%s, english=%s, persona=%s, "
-        "dict=%d entries, prompt=%s",
-        MODEL, ENGLISH_ONLY, PERSONA,
-        len(DICTIONARY),
-        repr(INITIAL_PROMPT[:80] + "...") if INITIAL_PROMPT and len(INITIAL_PROMPT) > 80 else repr(INITIAL_PROMPT),
-    )
 
 
 def validate():
