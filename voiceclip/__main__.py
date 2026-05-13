@@ -481,8 +481,10 @@ def _run_voiceclip():
         print("\n  Preloading Parakeet model (first run downloads ~1-4 GB)...")
     else:
         print("\n  Preloading Whisper model (first run downloads ~3 GB)...")
-    preload_model()
-    print("  ✅ Model ready")
+    if preload_model():
+        print("  ✅ Model ready")
+    else:
+        print("  ⚠️  Model not loaded (will retry on first use)")
     start_keep_warm()
 
     print()

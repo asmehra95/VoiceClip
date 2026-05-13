@@ -97,8 +97,10 @@ def preload_model():
     try:
         _get_engine().load(repo)
         log.info("Model preloaded successfully")
+        return True
     except Exception as e:
         log.warning("Model preload failed (will load on first use): %s", e)
+        return False
     finally:
         httpx_logger.setLevel(prev_level)
 
@@ -118,21 +120,27 @@ def transcribe(audio_path):
 
     timeout = _TIMEOUT.get(config.ENGINE, 30)
     repo = _engine_repo()
+    engine = _get_engine()
 
     result_box = [None]
     error_box = [None]
 
     def _do_transcribe():
         try:
-            engine = _get_engine()
-            with _engine_lock:
-                result_box[0] = engine.transcribe(audio_path, repo)
+            result_box[0] = engine.transcribe(audio_path, repo)
         except Exception as e:
             error_box[0] = e
 
-    worker = threading.Thread(target=_do_transcribe, daemon=True)
-    worker.start()
-    worker.join(timeout=timeout)
+    # Acquire the lock on THIS thread so it is always released — even on
+    # timeout. The worker runs inference without holding the lock; the lock
+    # just prevents concurrent engine use (keep-warm vs transcription).
+    _engine_lock.acquire()
+    try:
+        worker = threading.Thread(target=_do_transcribe, daemon=True)
+        worker.start()
+        worker.join(timeout=timeout)
+    finally:
+        _engine_lock.release()
 
     if worker.is_alive():
         log.error("Transcription timed out after %ds", timeout)
@@ -187,8 +195,8 @@ def _keep_warm_loop():
                 engine.keep_warm_ping(repo)
             _last_model_use = time.time()
             log.debug("Keep-warm ping completed")
-        except Exception as e:
-            log.debug("Keep-warm ping failed (harmless): %s", e)
+        except Exception:
+            pass
 
 
 def start_keep_warm():
