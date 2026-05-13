@@ -95,6 +95,13 @@ def preload_model():
     httpx_logger.setLevel(logging.WARNING)
 
     try:
+        if config.ENGINE == "parakeet":
+            # Parakeet TDT models bind the MLX GPU stream to the calling
+            # thread. Loading on the main thread prevents all worker threads
+            # from running inference. Skip preload; the first transcribe()
+            # call will lazy-load on its worker thread instead.
+            log.info("Parakeet: skipping main-thread preload (lazy-load on first use)")
+            return True
         _get_engine().load(repo)
         log.info("Model preloaded successfully")
         return True
