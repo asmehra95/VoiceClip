@@ -89,30 +89,18 @@ def preload_model():
     if not cached:
         print("  ⬇️  Downloading model (this only happens once)...")
 
-    stop_spinner = threading.Event()
-
-    def _spin():
-        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        i = 0
-        label = "Downloading & loading" if not cached else "Loading"
-        while not stop_spinner.is_set():
-            print(f"\r  {frames[i % len(frames)]} {label} model...", end="", flush=True)
-            i += 1
-            stop_spinner.wait(0.1)
-        print("\r" + " " * 50 + "\r", end="", flush=True)
-
-    spinner = threading.Thread(target=_spin, daemon=True)
-    spinner.start()
+    # Suppress httpx INFO logging that interleaves with download progress.
+    httpx_logger = logging.getLogger("httpx")
+    prev_level = httpx_logger.level
+    httpx_logger.setLevel(logging.WARNING)
 
     try:
-        with _engine_lock:
-            _get_engine().load(repo)
+        _get_engine().load(repo)
         log.info("Model preloaded successfully")
     except Exception as e:
         log.warning("Model preload failed (will load on first use): %s", e)
     finally:
-        stop_spinner.set()
-        spinner.join(timeout=1)
+        httpx_logger.setLevel(prev_level)
 
 
 # ---------------------------------------------------------------------------
@@ -136,8 +124,9 @@ def transcribe(audio_path):
 
     def _do_transcribe():
         try:
+            engine = _get_engine()
             with _engine_lock:
-                result_box[0] = _get_engine().transcribe(audio_path, repo)
+                result_box[0] = engine.transcribe(audio_path, repo)
         except Exception as e:
             error_box[0] = e
 
@@ -193,8 +182,9 @@ def _keep_warm_loop():
             log.debug("Keep-warm skipped (model used %.0fs ago)", elapsed)
             continue
         try:
+            engine = _get_engine()
             with _engine_lock:
-                _get_engine().keep_warm_ping(repo)
+                engine.keep_warm_ping(repo)
             _last_model_use = time.time()
             log.debug("Keep-warm ping completed")
         except Exception as e:
