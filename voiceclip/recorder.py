@@ -62,8 +62,6 @@ def _recorder_loop(conn):
     _active_device = [None]  # [device_index]
     _stream_box = [None]     # [sd.InputStream]
     _native_sr_box = [0]
-    _need_resample_box = [False]
-    _resample_ratio_box = [1.0]
     _max_samples_box = [0]
 
     # Timestamp of the last callback invocation. Used to detect streams
@@ -80,7 +78,7 @@ def _recorder_loop(conn):
         Returns True on success, False on failure. Updates all the
         mutable state boxes that the callback and STOP handler read.
         """
-        nonlocal need_resample, resample_ratio, max_samples
+        nonlocal max_samples
 
         try:
             target_dev = force_device if force_device is not None else sd.default.device[0]
@@ -112,14 +110,10 @@ def _recorder_loop(conn):
             except Exception:
                 pass
 
-        # Update resampling state
-        need_resample = native_sr != SAMPLE_RATE
-        resample_ratio = SAMPLE_RATE / native_sr if need_resample else 1.0
+        # Update state
         max_samples = int(MAX_RECORDING_SECONDS * native_sr)
 
         _native_sr_box[0] = native_sr
-        _need_resample_box[0] = need_resample
-        _resample_ratio_box[0] = resample_ratio
         _max_samples_box[0] = max_samples
         _active_device[0] = target_dev
 
@@ -176,8 +170,6 @@ def _recorder_loop(conn):
         return True
 
     # Initialize mutable state used by callback before defining it
-    need_resample = False
-    resample_ratio = 1.0
     max_samples = int(MAX_RECORDING_SECONDS * SAMPLE_RATE)
 
     # Log a warning exactly once per recording when the cap trips.
@@ -305,24 +297,14 @@ def _recorder_loop(conn):
 
             audio = np.concatenate(captured, axis=0).flatten()
 
-            # Resample to 16kHz if needed (linear interpolation)
-            cur_need_resample = _need_resample_box[0]
-            cur_resample_ratio = _resample_ratio_box[0]
-            if cur_need_resample:
-                new_len = int(math.ceil(len(audio) * cur_resample_ratio))
-                old_idx = np.arange(new_len) / cur_resample_ratio
-                old_idx = np.clip(old_idx, 0, len(audio) - 1)
-                floor_idx = np.floor(old_idx).astype(np.int32)
-                ceil_idx = np.minimum(floor_idx + 1, len(audio) - 1)
-                frac = (old_idx - floor_idx).astype(np.float32)
-                audio = audio[floor_idx] * (1.0 - frac) + audio[ceil_idx] * frac
-
-            # Write to temp file (mlx_whisper needs a file path)
+            # Write at native sample rate — let mlx_whisper handle
+            # resampling to 16kHz internally (sinc-based, higher quality
+            # than the linear interpolation we used to do here).
             try:
                 tmp = tempfile.NamedTemporaryFile(
                     prefix=TEMP_PREFIX, suffix=".wav", delete=False
                 )
-                sf.write(tmp.name, audio, SAMPLE_RATE)
+                sf.write(tmp.name, audio, cur_native_sr)
                 tmp.close()
                 conn.send(tmp.name)
             except Exception:
