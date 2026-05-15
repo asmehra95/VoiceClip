@@ -466,7 +466,7 @@ def load():
         if fresh:
             prompt_parts.append(", ".join(fresh))
 
-    INITIAL_PROMPT = ". ".join(prompt_parts)[:500] if prompt_parts else None
+    INITIAL_PROMPT = ". ".join(prompt_parts)[:900] if prompt_parts else None
 
 
 

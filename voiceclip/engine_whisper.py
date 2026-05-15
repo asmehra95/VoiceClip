@@ -60,11 +60,13 @@ def transcribe(audio_path: str, model_id: str) -> str | None:
         return None
 
     segments = result.get("segments", [])
-    real = [s for s in segments if s.get("no_speech_prob", 0) < 0.7]
-    if not real:
+    if not segments:
         return None
 
-    text = " ".join(s["text"].strip() for s in real).strip()
+    # No post-filtering — the recorder already rejects silence via RMS
+    # threshold, and the model's no_speech_threshold handles the rest.
+    # Filtering here was dropping valid speech with background noise.
+    text = " ".join(s["text"].strip() for s in segments).strip()
     return text or None
 
 

@@ -302,8 +302,9 @@ class TestPerformanceConstants:
 
     def test_transcribe_timeout_is_interactive(self):
         from voiceclip import transcriber
-        # 120s was the old diagnostic value; interactive needs <= 60.
-        assert transcriber.TRANSCRIBE_TIMEOUT <= 60
+        # All engine timeouts should be <= 60s for interactive use.
+        for engine, timeout in transcriber._TIMEOUT.items():
+            assert timeout <= 60, f"{engine} timeout {timeout}s exceeds 60s"
 
 
 
