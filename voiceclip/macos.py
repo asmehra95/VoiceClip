@@ -119,10 +119,13 @@ def copy_paste_and_restore(text):
     except Exception as e:
         log.warning("Paste failed: %s", e)
 
-    # Restore immediately — the paste keystroke has been dispatched,
-    # the app has already read the clipboard by now
+    # Restore after a delay — the paste keystroke was dispatched via
+    # osascript but the target app needs time to actually process Cmd+V
+    # and read the clipboard. Electron apps (Obsidian, VS Code, Slack)
+    # can take 100-300ms. The previous 50ms was too aggressive and caused
+    # the old clipboard content to be pasted instead of the transcription.
     if previous is not None:
-        time.sleep(0.05)  # 50ms safety margin for the app to read clipboard
+        time.sleep(0.3)  # 300ms — safe for heavy apps
         copy_to_clipboard(previous)
 
 

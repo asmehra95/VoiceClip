@@ -35,6 +35,8 @@ def _get_engine():
             return _engine
         if config.ENGINE == "parakeet":
             from voiceclip import engine_parakeet as mod
+        elif config.ENGINE == "whisper_cpp":
+            from voiceclip import engine_whisper_cpp as mod
         else:
             from voiceclip import engine_whisper as mod
         _engine = mod
@@ -52,14 +54,18 @@ class TranscriptionError(RuntimeError):
     """Raised when transcription fails in a way the user should know about."""
 
 
-_TIMEOUT = {"whisper": 30, "parakeet": 60}
-_KEEP_WARM_INTERVAL = {"whisper": 300, "parakeet": 600}
+_TIMEOUT = {"whisper": 30, "whisper_cpp": 60, "parakeet": 60}
+_KEEP_WARM_INTERVAL = {"whisper": 300, "whisper_cpp": 0, "parakeet": 600}
 
 
 def _engine_repo() -> str:
     """Return the model identifier for the current engine."""
     if config.ENGINE == "parakeet":
         return config.PARAKEET_MODEL
+    elif config.ENGINE == "whisper_cpp":
+        # For whisper_cpp, return the model name (e.g. "large-v3")
+        # which engine_whisper_cpp resolves to a GGML file path
+        return config.MODEL
     else:
         repo, _key = config.get_model_repo()
         return repo
@@ -67,6 +73,14 @@ def _engine_repo() -> str:
 
 def _is_model_cached() -> bool:
     """Check if the model is already downloaded in the HuggingFace cache."""
+    if config.ENGINE == "whisper_cpp":
+        # whisper_cpp uses local GGML files, not HuggingFace cache
+        from voiceclip.engine_whisper_cpp import _resolve_model_path
+        try:
+            _resolve_model_path(config.MODEL)
+            return True
+        except FileNotFoundError:
+            return False
     try:
         from huggingface_hub import try_to_load_from_cache
         repo = _engine_repo()

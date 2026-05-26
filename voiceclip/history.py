@@ -126,6 +126,8 @@ def _migrate(conn: sqlite3.Connection):
     # "done" by the user. Null means active. Archived topics stay in FTS and
     # can be surfaced by search, but they disappear from the live queue.
     _add_column(conn, "archived_at", "TEXT")
+    # Engine used for transcription (whisper, whisper_cpp, parakeet)
+    _add_column(conn, "engine", "TEXT")
     # Backfill any pre-existing NULL kinds (shouldn't happen given the DEFAULT,
     # but harmless and explicit).
     conn.execute(
@@ -283,8 +285,8 @@ def save(
                 "INSERT INTO transcriptions "
                 "(timestamp, raw_text, formatted_text, duration_seconds, "
                 " persona, model, word_count, kind, app_name, window_title, "
-                " is_research_topic) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " is_research_topic, engine) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now().isoformat(timespec="seconds"),
                     raw_text,
@@ -297,6 +299,7 @@ def save(
                     app_name,
                     window_title,
                     1 if is_research_topic else 0,
+                    ENGINE,
                 ),
             )
             _conn.commit()
