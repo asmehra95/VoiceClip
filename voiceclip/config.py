@@ -67,7 +67,7 @@ PARAKEET_MODELS = {
     "parakeet-rnnt-1.1b": "mlx-community/parakeet-rnnt-1.1b",
 }
 
-VALID_ENGINES = ("whisper", "parakeet")
+VALID_ENGINES = ("whisper", "whisper_cpp", "parakeet")
 
 
 # ---------------------------------------------------------------------------

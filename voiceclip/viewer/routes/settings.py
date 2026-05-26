@@ -35,7 +35,7 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
         "group": "Dictation",
         "type": "select",
         "restart_required": True,
-        "choices": ["whisper", "parakeet"],
+        "choices": ["whisper", "whisper_cpp", "parakeet"],
     },
     "model": {
         "group": "Dictation",
@@ -43,7 +43,7 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
         "restart_required": True,
         "choices": ["tiny", "base", "small", "medium",
                     "large-v3-turbo", "large-v3"],
-        "visible_when": {"engine": "whisper"},
+        "visible_when": {"engine": ["whisper", "whisper_cpp"]},
     },
     "parakeet_model": {
         "group": "Dictation",
@@ -75,7 +75,7 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
         "group": "Dictation",
         "type": "bool",
         "restart_required": True,
-        "visible_when": {"engine": "whisper"},
+        "visible_when": {"engine": ["whisper", "whisper_cpp"]},
     },
 
     # Reflections
@@ -216,7 +216,7 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
         "type": "text_list",
         "restart_required": True,
         "placeholder": "One per line (names, jargon, acronyms)",
-        "visible_when": {"engine": "whisper"},
+        "visible_when": {"engine": ["whisper", "whisper_cpp"]},
     },
 }
 

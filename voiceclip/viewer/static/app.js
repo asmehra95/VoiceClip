@@ -1530,7 +1530,13 @@
         const s = data.schema[key];
         if (s.visible_when) {
           const condKey = Object.keys(s.visible_when)[0];
-          if (data.values[condKey] !== s.visible_when[condKey]) continue;
+          const condVal = s.visible_when[condKey];
+          const actual = data.values[condKey];
+          // Support both single value and array of allowed values
+          const matches = Array.isArray(condVal)
+            ? condVal.includes(actual)
+            : actual === condVal;
+          if (!matches) continue;
         }
         groupEl.appendChild(renderSettingRow(key, s, data.values[key]));
       }
@@ -1774,7 +1780,16 @@
       }
       if (data.restart_required) showRestartBanner();
       // Refresh cache so subsequent cloud-flip detection uses the new value
-      if (_settingsCache) _settingsCache.values[key] = value;
+      if (_settingsCache) {
+        _settingsCache.values[key] = value;
+        // If this field is a visibility condition for other fields (e.g.
+        // "engine" controls whether model/parakeet_model are shown),
+        // re-render so the correct fields appear/disappear.
+        const isVisibilityTrigger = Object.values(_settingsCache.schema).some(
+          s => s.visible_when && Object.keys(s.visible_when)[0] === key
+        );
+        if (isVisibilityTrigger) renderSettings(_settingsCache);
+      }
     } catch(e) {}
   }
 
