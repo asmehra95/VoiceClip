@@ -1,18 +1,25 @@
 """whisper.cpp engine — runs whisper-cli binary with Metal GPU acceleration.
 
-Uses a pre-built whisper-cli binary and GGML quantized models for faster
-inference than mlx_whisper, especially on large-v3 (32 decoder layers).
+Supports two modes:
+  - CLI mode: spawns whisper-cli per transcription (stateless, no memory use)
+  - Server mode: starts whisper-server once, sends audio via HTTP (fast, model
+    stays loaded in GPU memory)
+
+Server mode is preferred — eliminates model load time per transcription.
+Falls back to CLI mode if the server can't start or dies mid-session.
 
 Exposes the same interface as engine_whisper:
-  load(model_id)              → verify binary + model exist
+  load(model_id)              → start server (or verify CLI binary exists)
   transcribe(path, model_id)  → raw text or None
-  keep_warm_ping(model_id)    → no-op (binary is stateless)
+  keep_warm_ping(model_id)    → no-op
 """
 
 import logging
 import os
 import subprocess
-import tempfile
+import time
+import urllib.request
+import urllib.error
 
 log = logging.getLogger(__name__)
 
@@ -21,14 +28,20 @@ WHISPER_CPP_BIN = os.environ.get(
     "VOICECLIP_WHISPER_CPP_BIN",
     os.path.expanduser("~/whisper.cpp/build/bin/whisper-cli"),
 )
+WHISPER_CPP_SERVER_BIN = os.environ.get(
+    "VOICECLIP_WHISPER_CPP_SERVER",
+    os.path.expanduser("~/whisper.cpp/build/bin/whisper-server"),
+)
 WHISPER_CPP_MODELS_DIR = os.environ.get(
     "VOICECLIP_WHISPER_CPP_MODELS",
     os.path.expanduser("~/.voiceclip/models"),
 )
+WHISPER_CPP_PORT = int(os.environ.get("VOICECLIP_WHISPER_CPP_PORT", "8178"))
 
 # Map config model names → GGML filenames
 _MODEL_FILES = {
-    "large-v3": "ggml-large-v3-q5_0.bin",
+    "large-v3": "ggml-large-v3.bin",
+    "large-v3-q5": "ggml-large-v3-q5_0.bin",
     "large-v3-turbo": "ggml-large-v3-turbo-q5_0.bin",
     "medium": "ggml-medium-q5_0.bin",
     "medium.en": "ggml-medium.en-q5_0.bin",
@@ -40,60 +53,208 @@ _MODEL_FILES = {
     "tiny.en": "ggml-tiny.en-q5_0.bin",
 }
 
+# Server process state
+_server_proc = None
+_server_ready = False
+
 
 def _resolve_model_path(model_id: str) -> str:
-    """Resolve a model identifier to a GGML file path.
-
-    Accepts:
-      - A full path to a .bin file
-      - A model name from _MODEL_FILES (e.g. "large-v3")
-      - A filename in the models directory
-    """
-    # Direct path
+    """Resolve a model identifier to a GGML file path."""
     if os.path.isfile(model_id):
         return model_id
-
-    # Known model name
     if model_id in _MODEL_FILES:
         path = os.path.join(WHISPER_CPP_MODELS_DIR, _MODEL_FILES[model_id])
         if os.path.isfile(path):
             return path
-
-    # Try as filename in models dir
     path = os.path.join(WHISPER_CPP_MODELS_DIR, model_id)
     if os.path.isfile(path):
         return path
-
-    # Try with .bin extension
     path = os.path.join(WHISPER_CPP_MODELS_DIR, f"ggml-{model_id}.bin")
     if os.path.isfile(path):
         return path
-
     raise FileNotFoundError(
         f"whisper.cpp model not found for '{model_id}'. "
-        f"Expected at {WHISPER_CPP_MODELS_DIR}. "
-        f"Download with: curl -L -o ~/.voiceclip/models/ggml-large-v3-q5_0.bin "
-        f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin"
+        f"Expected at {WHISPER_CPP_MODELS_DIR}."
     )
 
 
-def load(model_id: str):
-    """Verify the whisper-cli binary and model file exist."""
-    if not os.path.isfile(WHISPER_CPP_BIN):
-        raise FileNotFoundError(
-            f"whisper-cli binary not found at {WHISPER_CPP_BIN}. "
-            "Build it: cd ~/whisper.cpp && cmake -B build -DGGML_METAL=ON && "
-            "cmake --build build --config Release"
-        )
-    if not os.access(WHISPER_CPP_BIN, os.X_OK):
-        raise PermissionError(f"whisper-cli is not executable: {WHISPER_CPP_BIN}")
+# ---------------------------------------------------------------------------
+# Server management
+# ---------------------------------------------------------------------------
 
+def _start_server(model_path: str) -> bool:
+    """Start whisper-server as a background process. Returns True on success."""
+    global _server_proc, _server_ready
+
+    if not os.path.isfile(WHISPER_CPP_SERVER_BIN):
+        log.warning("whisper-server binary not found at %s", WHISPER_CPP_SERVER_BIN)
+        return False
+
+    from voiceclip import config
+
+    cmd = [
+        WHISPER_CPP_SERVER_BIN,
+        "-m", model_path,
+        "--host", "127.0.0.1",
+        "--port", str(WHISPER_CPP_PORT),
+        "-t", "6",
+        "-l", "en" if config.ENGLISH_ONLY else "auto",
+        "--no-timestamps",
+    ]
+    if config.INITIAL_PROMPT:
+        cmd.extend(["--prompt", config.INITIAL_PROMPT])
+
+    try:
+        _server_proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        log.error("Failed to start whisper-server: %s", e)
+        return False
+
+    # Wait for server to be ready (poll /health or /inference endpoint)
+    for i in range(30):  # up to 15 seconds
+        time.sleep(0.5)
+        if _server_proc.poll() is not None:
+            log.error("whisper-server exited early (rc=%d)", _server_proc.returncode)
+            _server_proc = None
+            return False
+        if _server_health_check():
+            _server_ready = True
+            log.info("whisper-server ready on port %d (pid=%d)", WHISPER_CPP_PORT, _server_proc.pid)
+            return True
+
+    log.error("whisper-server did not become ready in 15s")
+    _kill_server()
+    return False
+
+
+def _server_health_check() -> bool:
+    """Check if the server is responding."""
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{WHISPER_CPP_PORT}/",
+            method="GET",
+        )
+        resp = urllib.request.urlopen(req, timeout=1)
+        return resp.status == 200
+    except Exception:
+        return False
+
+
+def _kill_server():
+    """Terminate the server process."""
+    global _server_proc, _server_ready
+    _server_ready = False
+    if _server_proc is not None:
+        try:
+            _server_proc.terminate()
+            _server_proc.wait(timeout=5)
+        except Exception:
+            try:
+                _server_proc.kill()
+            except Exception:
+                pass
+        _server_proc = None
+
+
+def _is_server_alive() -> bool:
+    """Check if our server process is still running."""
+    if _server_proc is None:
+        return False
+    return _server_proc.poll() is None
+
+
+# ---------------------------------------------------------------------------
+# Engine interface
+# ---------------------------------------------------------------------------
+
+def load(model_id: str):
+    """Start the whisper-server with the given model."""
     model_path = _resolve_model_path(model_id)
-    log.info("whisper.cpp ready: binary=%s, model=%s", WHISPER_CPP_BIN, model_path)
+
+    # Kill existing server if running with a different model
+    if _server_proc is not None:
+        _kill_server()
+
+    if not _start_server(model_path):
+        # Fall back to verifying CLI mode works
+        if not os.path.isfile(WHISPER_CPP_BIN):
+            raise FileNotFoundError(
+                f"Neither whisper-server nor whisper-cli available. "
+                f"Build whisper.cpp first."
+            )
+        log.warning("Server mode failed, will use CLI fallback")
 
 
 def transcribe(audio_path: str, model_id: str) -> str | None:
-    """Run whisper-cli on the audio file. Returns text or None."""
+    """Transcribe via server (preferred) or CLI fallback."""
+    if _server_ready and _is_server_alive():
+        return _transcribe_server(audio_path)
+    else:
+        return _transcribe_cli(audio_path, model_id)
+
+
+def _transcribe_server(audio_path: str) -> str | None:
+    """Send audio to the whisper-server via HTTP POST."""
+    import json
+
+    url = f"http://127.0.0.1:{WHISPER_CPP_PORT}/inference"
+
+    try:
+        # Build multipart form data
+        boundary = "----VoiceClipBoundary"
+        body = b""
+
+        # Add the audio file
+        with open(audio_path, "rb") as f:
+            audio_data = f.read()
+
+        body += f"--{boundary}\r\n".encode()
+        body += f'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'.encode()
+        body += b"Content-Type: audio/wav\r\n\r\n"
+        body += audio_data
+        body += b"\r\n"
+
+        # Add response_format parameter
+        body += f"--{boundary}\r\n".encode()
+        body += b'Content-Disposition: form-data; name="response_format"\r\n\r\n'
+        body += b"json"
+        body += b"\r\n"
+
+        body += f"--{boundary}--\r\n".encode()
+
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+            method="POST",
+        )
+
+        resp = urllib.request.urlopen(req, timeout=60)
+        result = json.loads(resp.read().decode("utf-8"))
+
+        text = result.get("text", "").strip()
+        if not text or text == "[BLANK_AUDIO]":
+            return None
+        return text
+
+    except urllib.error.URLError as e:
+        log.warning("Server request failed: %s, falling back to CLI", e)
+        global _server_ready
+        _server_ready = False
+        return None
+    except Exception as e:
+        log.error("Server transcription error: %s", e)
+        return None
+
+
+def _transcribe_cli(audio_path: str, model_id: str) -> str | None:
+    """Fallback: run whisper-cli directly."""
     from voiceclip import config
 
     model_path = _resolve_model_path(model_id)
@@ -104,43 +265,54 @@ def transcribe(audio_path: str, model_id: str) -> str | None:
         "-f", audio_path,
         "--no-timestamps",
         "--no-prints",
-        "-t", "4",  # threads
+        "-t", "6",
     ]
 
-    # Language
     if config.ENGLISH_ONLY:
         cmd.extend(["-l", "en"])
-
-    # Initial prompt (vocabulary biasing)
     if config.INITIAL_PROMPT:
         cmd.extend(["--prompt", config.INITIAL_PROMPT])
 
     try:
         result = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=60,
-            text=True,
+            cmd, capture_output=True, timeout=60, text=True,
         )
     except subprocess.TimeoutExpired:
-        log.error("whisper.cpp timed out after 60s")
+        log.error("whisper.cpp CLI timed out after 60s")
         return None
     except FileNotFoundError:
-        log.error("whisper-cli binary not found at %s", WHISPER_CPP_BIN)
+        log.error("whisper-cli not found at %s", WHISPER_CPP_BIN)
         return None
 
     if result.returncode != 0:
-        stderr = result.stderr.strip()[:200] if result.stderr else ""
-        log.error("whisper.cpp failed (rc=%d): %s", result.returncode, stderr)
+        log.error("whisper.cpp CLI failed (rc=%d)", result.returncode)
         return None
 
     text = result.stdout.strip()
     if not text or text == "[BLANK_AUDIO]":
         return None
-
     return text
 
 
 def keep_warm_ping(model_id: str):
-    """No-op — whisper.cpp is a stateless binary, no model to keep warm."""
+    """No-op — server keeps the model warm; CLI uses page cache."""
     pass
+
+
+def shutdown():
+    """Clean shutdown — kill the server. Called on VoiceClip exit."""
+    _kill_server()
+
+
+def model_label(model_id: str) -> str:
+    """Return a descriptive label for analytics (includes quantization info)."""
+    try:
+        path = _resolve_model_path(model_id)
+    except FileNotFoundError:
+        return model_id
+
+    filename = os.path.basename(path)
+    name = filename.replace("ggml-", "").replace(".bin", "")
+    if "q" not in name.split("-")[-1]:
+        name = f"{name}-fp16"
+    return name

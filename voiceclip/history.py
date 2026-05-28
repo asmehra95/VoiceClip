@@ -281,6 +281,10 @@ def save(
         with _write_lock:
             from voiceclip.config import ENGINE, MODEL, PARAKEET_MODEL, PERSONA
             active_model = PARAKEET_MODEL if ENGINE == "parakeet" else MODEL
+            # For whisper_cpp, include quantization info in the model label
+            if ENGINE == "whisper_cpp":
+                from voiceclip.engine_whisper_cpp import model_label
+                active_model = model_label(MODEL)
             cur = _conn.execute(
                 "INSERT INTO transcriptions "
                 "(timestamp, raw_text, formatted_text, duration_seconds, "
