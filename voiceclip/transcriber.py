@@ -223,10 +223,14 @@ def _keep_warm_loop():
 def start_keep_warm():
     """Start the background keep-warm thread. Idempotent."""
     global _keep_warm_thread
+    interval = _KEEP_WARM_INTERVAL.get(config.ENGINE, 300)
+    # whisper_cpp uses a persistent server — no keep-warm needed
+    if interval <= 0:
+        log.info("Keep-warm disabled for engine=%s (server mode)", config.ENGINE)
+        return
     if _keep_warm_thread is not None and _keep_warm_thread.is_alive():
         return
     _keep_warm_stop.clear()
-    interval = _KEEP_WARM_INTERVAL.get(config.ENGINE, 300)
     _keep_warm_thread = threading.Thread(
         target=_keep_warm_loop,
         name="voiceclip-keep-warm",
