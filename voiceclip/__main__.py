@@ -452,6 +452,13 @@ def _run_voiceclip():
     def _shutdown(signum=None, frame=None):
         print("\n👋 VoiceClip stopped.")
         stop_keep_warm()
+        # Shut down whisper.cpp server if running
+        if config.ENGINE == "whisper_cpp":
+            try:
+                from voiceclip.engine_whisper_cpp import shutdown as shutdown_whisper
+                shutdown_whisper()
+            except Exception:
+                pass
         for h in handlers:
             try:
                 h.stop()
