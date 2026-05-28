@@ -99,7 +99,7 @@ def _start_server(model_path: str) -> bool:
         "--port", str(WHISPER_CPP_PORT),
         "-t", "6",
         "-l", "en" if config.ENGLISH_ONLY else "auto",
-        "--no-timestamps",
+        "--convert",  # use ffmpeg to convert incoming audio to proper format
     ]
     if config.INITIAL_PROMPT:
         cmd.extend(["--prompt", config.INITIAL_PROMPT])
@@ -200,56 +200,62 @@ def transcribe(audio_path: str, model_id: str) -> str | None:
 def _transcribe_server(audio_path: str) -> str | None:
     """Send audio to the whisper-server via HTTP POST."""
     import json
-
-    url = f"http://127.0.0.1:{WHISPER_CPP_PORT}/inference"
+    import http.client
+    from email.mime.multipart import MIMEMultipart
+    import mimetypes
+    import uuid
 
     try:
-        # Build multipart form data
-        boundary = "----VoiceClipBoundary"
-        body = b""
-
-        # Add the audio file
         with open(audio_path, "rb") as f:
             audio_data = f.read()
 
-        body += f"--{boundary}\r\n".encode()
-        body += f'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'.encode()
-        body += b"Content-Type: audio/wav\r\n\r\n"
-        body += audio_data
-        body += b"\r\n"
+        # Build proper multipart/form-data manually
+        boundary = uuid.uuid4().hex
+        filename = os.path.basename(audio_path)
 
-        # Add response_format parameter
-        body += f"--{boundary}\r\n".encode()
-        body += b'Content-Disposition: form-data; name="response_format"\r\n\r\n'
-        body += b"json"
-        body += b"\r\n"
+        body = (
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+            f"Content-Type: audio/wav\r\n"
+            f"\r\n"
+        ).encode() + audio_data + (
+            f"\r\n"
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name=\"response_format\"\r\n"
+            f"\r\n"
+            f"json\r\n"
+            f"--{boundary}--\r\n"
+        ).encode()
 
-        body += f"--{boundary}--\r\n".encode()
-
-        req = urllib.request.Request(
-            url,
-            data=body,
+        conn = http.client.HTTPConnection("127.0.0.1", WHISPER_CPP_PORT, timeout=60)
+        conn.request(
+            "POST",
+            "/inference",
+            body=body,
             headers={
                 "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(body)),
             },
-            method="POST",
         )
+        resp = conn.getresponse()
+        resp_data = resp.read().decode("utf-8")
+        conn.close()
 
-        resp = urllib.request.urlopen(req, timeout=60)
-        result = json.loads(resp.read().decode("utf-8"))
+        if resp.status != 200:
+            log.warning("Server returned %d: %s", resp.status, resp_data[:200])
+            global _server_ready
+            _server_ready = False
+            return None
 
+        result = json.loads(resp_data)
         text = result.get("text", "").strip()
         if not text or text == "[BLANK_AUDIO]":
             return None
         return text
 
-    except urllib.error.URLError as e:
-        log.warning("Server request failed: %s, falling back to CLI", e)
-        global _server_ready
-        _server_ready = False
-        return None
     except Exception as e:
-        log.error("Server transcription error: %s", e)
+        log.warning("Server transcription error: %s, falling back to CLI", e)
+        _server_ready = False
         return None
 
 
