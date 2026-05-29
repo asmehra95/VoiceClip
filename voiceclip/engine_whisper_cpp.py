@@ -251,6 +251,10 @@ def _transcribe_server(audio_path: str) -> str | None:
         text = result.get("text", "").strip()
         if not text or text == "[BLANK_AUDIO]":
             return None
+
+        # whisper-server returns segment breaks as newlines — join into
+        # a single line since our formatter handles paragraph structure.
+        text = " ".join(line.strip() for line in text.splitlines() if line.strip())
         return text
 
     except Exception as e:
@@ -297,6 +301,9 @@ def _transcribe_cli(audio_path: str, model_id: str) -> str | None:
     text = result.stdout.strip()
     if not text or text == "[BLANK_AUDIO]":
         return None
+
+    # CLI output also has segment newlines — join into single line
+    text = " ".join(line.strip() for line in text.splitlines() if line.strip())
     return text
 
 
