@@ -38,6 +38,13 @@ WHISPER_CPP_MODELS_DIR = os.environ.get(
 )
 WHISPER_CPP_PORT = int(os.environ.get("VOICECLIP_WHISPER_CPP_PORT", "8178"))
 
+# How long to wait for whisper-server to become ready. Normal startup is
+# 1-3s, but a Core ML encoder's first-ever load triggers an ANE compile
+# that can take minutes. Giving up too early silently degrades every
+# dictation to CLI mode, which reloads the model per call — much worse
+# than a slow one-time startup.
+SERVER_START_TIMEOUT = int(os.environ.get("VOICECLIP_WHISPER_CPP_START_TIMEOUT", "180"))
+
 # Map config model names → GGML filenames
 _MODEL_FILES = {
     "large-v3": "ggml-large-v3.bin",
@@ -57,6 +64,7 @@ _MODEL_FILES = {
 # Server process state
 _server_proc = None
 _server_ready = False
+_last_restart_attempt = 0.0  # rate-limits automatic server restarts
 
 
 def _resolve_model_path(model_id: str) -> str:
@@ -116,19 +124,32 @@ def _start_server(model_path: str) -> bool:
         log.error("Failed to start whisper-server: %s", e)
         return False
 
-    # Wait for server to be ready (poll /health or /inference endpoint)
-    for i in range(30):  # up to 15 seconds
+    # Wait for the server to become ready, as long as the process stays
+    # alive. Keep polling well past the normal 1-3s startup — see
+    # SERVER_START_TIMEOUT for why.
+    started = time.time()
+    slow_notice_shown = False
+    while time.time() - started < SERVER_START_TIMEOUT:
         time.sleep(0.5)
         if _server_proc.poll() is not None:
             log.error("whisper-server exited early (rc=%d)", _server_proc.returncode)
             _server_proc = None
             return False
         if _server_health_check():
+            elapsed = time.time() - started
             _server_ready = True
-            log.info("whisper-server ready on port %d (pid=%d)", WHISPER_CPP_PORT, _server_proc.pid)
+            log.info("whisper-server ready on port %d (pid=%d) after %.1fs",
+                     WHISPER_CPP_PORT, _server_proc.pid, elapsed)
             return True
+        if not slow_notice_shown and time.time() - started > 15:
+            slow_notice_shown = True
+            print(
+                "  ⏳ Speech model still loading — a first run with a new "
+                "Core ML encoder can take a few minutes (one-time compile)...",
+                flush=True,
+            )
 
-    log.error("whisper-server did not become ready in 15s")
+    log.error("whisper-server did not become ready in %ds", SERVER_START_TIMEOUT)
     _kill_server()
     return False
 
@@ -192,11 +213,42 @@ def load(model_id: str):
 
 
 def transcribe(audio_path: str, model_id: str) -> str | None:
-    """Transcribe via server (preferred) or CLI fallback."""
+    """Transcribe via server (preferred) or CLI fallback.
+
+    Server mode is sticky in both directions:
+      - A transient request failure (including a failed keep-warm ping)
+        trips _server_ready, but if the server process is still alive and
+        healthy we restore server mode instead of paying the CLI's
+        per-call model load forever.
+      - When a request fails mid-flight, that dictation is retried through
+        the CLI rather than being silently dropped as "no speech".
+    """
+    global _server_ready, _last_restart_attempt
+
+    if not _server_ready and _is_server_alive() and _server_health_check():
+        log.info("whisper-server recovered; resuming server mode")
+        _server_ready = True
+
+    # Dead server: restarting it (~2-3s) beats the CLI fallback, which
+    # reloads the model on every call (~40s with a Core ML encoder).
+    # Rate-limited so a server that keeps crashing can't stall every
+    # dictation with a doomed restart attempt.
+    if not _is_server_alive() and time.time() - _last_restart_attempt > 60:
+        _last_restart_attempt = time.time()
+        log.warning("whisper-server not running; attempting restart")
+        try:
+            _start_server(_resolve_model_path(model_id))
+        except Exception as e:
+            log.error("Server restart failed: %s", e)
+
     if _server_ready and _is_server_alive():
-        return _transcribe_server(audio_path)
-    else:
-        return _transcribe_cli(audio_path, model_id)
+        text = _transcribe_server(audio_path)
+        if _server_ready:
+            return text
+        # _transcribe_server tripped the flag — the request failed, not
+        # the audio. Fall through and retry this dictation via CLI.
+        log.warning("Server request failed; retrying this dictation via CLI")
+    return _transcribe_cli(audio_path, model_id)
 
 
 def _transcribe_server(audio_path: str) -> str | None:
