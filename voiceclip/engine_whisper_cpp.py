@@ -42,7 +42,8 @@ WHISPER_CPP_PORT = int(os.environ.get("VOICECLIP_WHISPER_CPP_PORT", "8178"))
 _MODEL_FILES = {
     "large-v3": "ggml-large-v3.bin",
     "large-v3-q5": "ggml-large-v3-q5_0.bin",
-    "large-v3-turbo": "ggml-large-v3-turbo-q5_0.bin",
+    "large-v3-turbo": "ggml-large-v3-turbo.bin",
+    "large-v3-turbo-q5": "ggml-large-v3-turbo-q5_0.bin",
     "medium": "ggml-medium-q5_0.bin",
     "medium.en": "ggml-medium.en-q5_0.bin",
     "small": "ggml-small-q5_0.bin",
@@ -98,6 +99,7 @@ def _start_server(model_path: str) -> bool:
         "--host", "127.0.0.1",
         "--port", str(WHISPER_CPP_PORT),
         "-t", "6",
+        "-bs", "5",  # beam search — whisper.cpp defaults to greedy (-1)
         "-l", "en" if config.ENGLISH_ONLY else "auto",
         "--convert",  # use ffmpeg to convert incoming audio to proper format
     ]
@@ -276,6 +278,7 @@ def _transcribe_cli(audio_path: str, model_id: str) -> str | None:
         "--no-timestamps",
         "--no-prints",
         "-t", "6",
+        "-bs", "5",  # beam search — whisper.cpp defaults to greedy (-1)
     ]
 
     if config.ENGLISH_ONLY:
@@ -308,8 +311,39 @@ def _transcribe_cli(audio_path: str, model_id: str) -> str | None:
 
 
 def keep_warm_ping(model_id: str):
-    """No-op — server keeps the model warm; CLI uses page cache."""
-    pass
+    """Run a tiny silence inference through the server to keep weights resident.
+
+    The server holds the model in its process, but macOS pages those
+    gigabytes out after idle — the first transcription after a break then
+    stalls on faulting them back in. A periodic inference touches the
+    weights and keeps them warm.
+
+    No-op when the server isn't running: spawning whisper-cli for a ping
+    would cold-load the model from disk every interval, which is worse
+    than the problem it solves.
+    """
+    if not (_server_ready and _is_server_alive()):
+        return
+
+    import tempfile
+    import wave
+
+    from voiceclip.config import TEMP_PREFIX
+    from voiceclip.utils import safe_unlink
+
+    tmp = tempfile.NamedTemporaryFile(
+        prefix=TEMP_PREFIX, suffix=".wav", delete=False
+    )
+    try:
+        with wave.open(tmp, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit PCM
+            wf.setframerate(16000)
+            wf.writeframes(b"\x00\x00" * 8000)  # 0.5s of silence
+        tmp.close()
+        _transcribe_server(tmp.name)
+    finally:
+        safe_unlink(tmp.name)
 
 
 def shutdown():

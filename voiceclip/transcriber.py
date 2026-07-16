@@ -55,7 +55,9 @@ class TranscriptionError(RuntimeError):
 
 
 _TIMEOUT = {"whisper": 30, "whisper_cpp": 60, "parakeet": 60}
-_KEEP_WARM_INTERVAL = {"whisper": 300, "whisper_cpp": 0, "parakeet": 600}
+# whisper_cpp: the server keeps the model in its process, but macOS still
+# pages the weights out after idle — ping periodically to keep them resident.
+_KEEP_WARM_INTERVAL = {"whisper": 300, "whisper_cpp": 300, "parakeet": 600}
 
 
 def _engine_repo() -> str:
@@ -224,9 +226,8 @@ def start_keep_warm():
     """Start the background keep-warm thread. Idempotent."""
     global _keep_warm_thread
     interval = _KEEP_WARM_INTERVAL.get(config.ENGINE, 300)
-    # whisper_cpp uses a persistent server — no keep-warm needed
     if interval <= 0:
-        log.info("Keep-warm disabled for engine=%s (server mode)", config.ENGINE)
+        log.info("Keep-warm disabled for engine=%s", config.ENGINE)
         return
     if _keep_warm_thread is not None and _keep_warm_thread.is_alive():
         return
