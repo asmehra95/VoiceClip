@@ -11,12 +11,13 @@ Falls back to CLI mode if the server can't start or dies mid-session.
 Exposes the same interface as engine_whisper:
   load(model_id)              → start server (or verify CLI binary exists)
   transcribe(path, model_id)  → raw text or None
-  keep_warm_ping(model_id)    → no-op
+  keep_warm_ping(model_id)    → silence inference to keep weights resident
 """
 
 import logging
 import os
 import subprocess
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -38,12 +39,23 @@ WHISPER_CPP_MODELS_DIR = os.environ.get(
 )
 WHISPER_CPP_PORT = int(os.environ.get("VOICECLIP_WHISPER_CPP_PORT", "8178"))
 
-# How long to wait for whisper-server to become ready. Normal startup is
-# 1-3s, but a Core ML encoder's first-ever load triggers an ANE compile
-# that can take minutes. Giving up too early silently degrades every
-# dictation to CLI mode, which reloads the model per call — much worse
-# than a slow one-time startup.
+# How long to wait for whisper-server to become ready at startup (load()).
+# Normal startup is 1-3s, but a Core ML encoder's first-ever load triggers
+# an ANE compile that can take minutes. Giving up too early silently
+# degrades every dictation to CLI mode, which reloads the model per call —
+# much worse than a slow one-time startup.
 SERVER_START_TIMEOUT = int(os.environ.get("VOICECLIP_WHISPER_CPP_START_TIMEOUT", "180"))
+
+# Budget for automatic mid-session restarts. These happen inside
+# transcribe() / keep_warm_ping(), whose caller (transcriber.py) abandons
+# the worker thread after its own 60s timeout — so this must stay well
+# under that. A warm restart takes 2-3s; the minutes-long ANE compile only
+# happens once per machine and is paid at load() time.
+SERVER_RESTART_TIMEOUT = int(os.environ.get("VOICECLIP_WHISPER_CPP_RESTART_TIMEOUT", "20"))
+
+# Minimum seconds between automatic restart attempts, so a server that
+# keeps crashing can't stall every dictation with a doomed restart.
+_RESTART_COOLDOWN = 60
 
 # Map config model names → GGML filenames
 _MODEL_FILES = {
@@ -61,10 +73,15 @@ _MODEL_FILES = {
     "tiny.en": "ggml-tiny.en-q5_0.bin",
 }
 
-# Server process state
+# Server process state. All mutation of _server_proc/_server_ready during
+# recovery or restart happens under _lifecycle_lock: transcriber.py's
+# engine lock is released when a transcription worker is abandoned on
+# timeout, so two threads *can* reach the lifecycle code concurrently —
+# without the lock they could double-spawn servers or kill each other's.
 _server_proc = None
 _server_ready = False
 _last_restart_attempt = 0.0  # rate-limits automatic server restarts
+_lifecycle_lock = threading.Lock()
 
 
 def _resolve_model_path(model_id: str) -> str:
@@ -91,9 +108,17 @@ def _resolve_model_path(model_id: str) -> str:
 # Server management
 # ---------------------------------------------------------------------------
 
-def _start_server(model_path: str) -> bool:
-    """Start whisper-server as a background process. Returns True on success."""
+def _start_server(model_path: str, timeout: float | None = None) -> bool:
+    """Start whisper-server as a background process. Returns True on success.
+
+    `timeout` bounds the wait for readiness; defaults to
+    SERVER_START_TIMEOUT (generous, for startup). Mid-session restarts
+    pass SERVER_RESTART_TIMEOUT instead.
+    """
     global _server_proc, _server_ready
+
+    if timeout is None:
+        timeout = SERVER_START_TIMEOUT
 
     if not os.path.isfile(WHISPER_CPP_SERVER_BIN):
         log.warning("whisper-server binary not found at %s", WHISPER_CPP_SERVER_BIN)
@@ -129,7 +154,7 @@ def _start_server(model_path: str) -> bool:
     # SERVER_START_TIMEOUT for why.
     started = time.time()
     slow_notice_shown = False
-    while time.time() - started < SERVER_START_TIMEOUT:
+    while time.time() - started < timeout:
         time.sleep(0.5)
         if _server_proc.poll() is not None:
             log.error("whisper-server exited early (rc=%d)", _server_proc.returncode)
@@ -149,9 +174,46 @@ def _start_server(model_path: str) -> bool:
                 flush=True,
             )
 
-    log.error("whisper-server did not become ready in %ds", SERVER_START_TIMEOUT)
+    log.error("whisper-server did not become ready in %ds", timeout)
     _kill_server()
     return False
+
+
+def _ensure_server(model_id: str, timeout: float) -> None:
+    """Recover or restart the server if it isn't serving. Thread-safe.
+
+    Two repair paths, both under _lifecycle_lock:
+      - Process alive but _server_ready tripped by a transient request
+        failure (including keep-warm pings): restore server mode after a
+        health check.
+      - Process dead: restart it, rate-limited to one attempt per
+        _RESTART_COOLDOWN. A restart (~2-3s) beats the CLI fallback,
+        which reloads the model on every call (~40s with a Core ML
+        encoder).
+    """
+    global _server_ready, _last_restart_attempt
+
+    with _lifecycle_lock:
+        if _server_ready and _is_server_alive():
+            return
+
+        if _is_server_alive():
+            if _server_health_check():
+                log.info("whisper-server recovered; resuming server mode")
+                _server_ready = True
+            return
+
+        # Process is gone — the ready flag is meaningless now.
+        _server_ready = False
+
+        if time.time() - _last_restart_attempt <= _RESTART_COOLDOWN:
+            return
+        _last_restart_attempt = time.time()
+        log.warning("whisper-server not running; attempting restart")
+        try:
+            _start_server(_resolve_model_path(model_id), timeout=timeout)
+        except Exception as e:
+            log.error("Server restart failed: %s", e)
 
 
 def _server_health_check() -> bool:
@@ -202,7 +264,7 @@ def load(model_id: str):
     if _server_proc is not None:
         _kill_server()
 
-    if not _start_server(model_path):
+    if not _start_server(model_path, timeout=SERVER_START_TIMEOUT):
         # Fall back to verifying CLI mode works
         if not os.path.isfile(WHISPER_CPP_BIN):
             raise FileNotFoundError(
@@ -223,23 +285,7 @@ def transcribe(audio_path: str, model_id: str) -> str | None:
       - When a request fails mid-flight, that dictation is retried through
         the CLI rather than being silently dropped as "no speech".
     """
-    global _server_ready, _last_restart_attempt
-
-    if not _server_ready and _is_server_alive() and _server_health_check():
-        log.info("whisper-server recovered; resuming server mode")
-        _server_ready = True
-
-    # Dead server: restarting it (~2-3s) beats the CLI fallback, which
-    # reloads the model on every call (~40s with a Core ML encoder).
-    # Rate-limited so a server that keeps crashing can't stall every
-    # dictation with a doomed restart attempt.
-    if not _is_server_alive() and time.time() - _last_restart_attempt > 60:
-        _last_restart_attempt = time.time()
-        log.warning("whisper-server not running; attempting restart")
-        try:
-            _start_server(_resolve_model_path(model_id))
-        except Exception as e:
-            log.error("Server restart failed: %s", e)
+    _ensure_server(model_id, timeout=SERVER_RESTART_TIMEOUT)
 
     if _server_ready and _is_server_alive():
         text = _transcribe_server(audio_path)
@@ -370,10 +416,14 @@ def keep_warm_ping(model_id: str):
     stalls on faulting them back in. A periodic inference touches the
     weights and keeps them warm.
 
-    No-op when the server isn't running: spawning whisper-cli for a ping
-    would cold-load the model from disk every interval, which is worse
-    than the problem it solves.
+    The ping runs off the user's critical path, which also makes it the
+    ideal place to bring a dead server back — so the next dictation
+    doesn't pay the restart cost. If the server can't be brought up
+    (restart failed or rate-limited), the ping is skipped: pinging via
+    whisper-cli would cold-load the model from disk every interval,
+    which is worse than the problem it solves.
     """
+    _ensure_server(model_id, timeout=SERVER_RESTART_TIMEOUT)
     if not (_server_ready and _is_server_alive()):
         return
 
