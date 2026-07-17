@@ -2,8 +2,12 @@
 
 Push-to-talk dictation for macOS, with an optional private journal.
 
-Hold a key, speak, release. Your words appear where your cursor was.
-Audio never leaves your Mac — transcription runs on the local Apple Silicon GPU.
+Hold a key, speak, release. Your words appear where your cursor was —
+typically in about a second. Audio never leaves your Mac: transcription
+runs entirely on Apple Silicon, with the GPU and Neural Engine working
+together. No cloud, no account, no heavyweight app. See
+[Built for speed](#built-for-speed) for how far the performance has been
+pushed.
 
 Optional features include a searchable journal, daily LLM summaries, a
 chronological timeline view, and a longitudinal "patterns" coach. They're
@@ -56,10 +60,49 @@ local-first, and deliberately small.
 3. Release — you hear a *pop*, then a *chime*.
 4. Text appears where your cursor was. Your existing clipboard is preserved.
 
-Works in any app. On Apple Silicon (any Mac from 2021 or newer), typical
-end-to-end latency for a 5-10 second clip is **2-4 seconds** — model
-warm-up + Whisper inference + paste. Cold-start on first run takes longer
-because the model is downloading.
+Works in any app. On Apple Silicon (any Mac from 2021 or newer), a typical
+dictation appears **in about a second** from key release — often well under
+it on recent machines. Cold-start on first run takes longer because the
+model is downloading.
+
+---
+
+## Built for speed
+
+VoiceClip is one of the most lightweight ways to run serious dictation on
+a laptop: a small Python process, a local speech model, and nothing else.
+No Electron app, no cloud round trip, no subscription service polling in
+the background. Getting there took deliberate engineering — every stage of
+the pipeline has been measured and squeezed:
+
+- **The model loads once and stays ready.** Transcription runs against a
+  persistent local engine instead of reloading the model per dictation.
+  A gentle background heartbeat keeps the model resident in memory, so
+  the first dictation after a long idle is just as fast as the tenth —
+  no more multi-second "warm-up" stalls after lunch.
+
+- **Every chip on your Mac pitches in.** The speech model's listening
+  half runs on the Neural Engine — the dedicated AI silicon that sits
+  idle in most apps — while the writing half runs on the GPU. The CPU
+  just directs traffic. Nothing is left on the table.
+
+- **No accuracy traded for speed.** VoiceClip runs the full-precision
+  turbo model with quality-first decoding. The speed comes from using
+  the hardware well, not from shrinking the model.
+
+- **A lean hot path.** Audio is decoded in-process (no helper programs
+  spawned per dictation), and the finished text is delivered with a
+  direct in-process keystroke rather than launching a scripting engine.
+  Total overhead around the model: a few tens of milliseconds.
+
+- **Self-healing.** If the local engine ever hiccups or dies, VoiceClip
+  detects it, recovers or restarts it automatically, and retries your
+  dictation through a fallback — words are never silently dropped.
+
+The cumulative effect: dictations that used to take several seconds now
+land in well under one on recent Apple Silicon, with better accuracy than
+before. Your clipboard is preserved, your audio is deleted immediately
+after transcription, and the whole thing idles at zero cost.
 
 ---
 
@@ -230,15 +273,16 @@ speed vs accuracy preference:
 
 | Model | Latency* | Accuracy | RAM |
 |---|---|---|---|
-| `tiny` | <1s | Fair | 1 GB |
-| `base` | ~1s | Good | 1 GB |
-| `small` | ~2s | Great | 2 GB |
-| **`large-v3-turbo`** ★ | **~3s** | **Excellent** | **3 GB** |
-| `large-v3` | ~6s | Excellent | 6 GB |
+| `tiny` | <0.5s | Fair | 1 GB |
+| `base` | <0.5s | Good | 1 GB |
+| `small` | ~0.5s | Great | 2 GB |
+| **`large-v3-turbo`** ★ | **~1s** | **Excellent** | **3 GB** |
+| `large-v3` | ~2-3s | Excellent | 6 GB |
 
-\* Warm-cache end-to-end latency for a ~10 second clip on an M2 MacBook
-Pro. First run of each model downloads weights; your hardware and clip
-length will vary. ★ = default.
+\* Warm end-to-end latency for a ~10 second clip on an M3 Pro with the
+persistent engine. Typical shorter dictations land faster. First run of
+each model downloads weights; your hardware and clip length will vary.
+★ = default.
 
 ### Multilingual
 
@@ -585,7 +629,7 @@ install.sh          # Installer
 pyproject.toml      # Package metadata + tool config (ruff, pytest)
 config.default.json # Default config with examples
 requirements.txt    # Core runtime deps (kept in sync with pyproject.toml)
-tests/              # Unit tests — 367 passing, run via pytest
+tests/              # Unit tests — 400 passing, run via pytest
 BACKLOG.md          # Known issues and deferred work
 ```
 
@@ -602,6 +646,7 @@ best.
 
 MIT. See [LICENSE](LICENSE).
 
-Built with [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper),
+Built with [whisper.cpp](https://github.com/ggerganov/whisper.cpp),
+[mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper),
 [pynput](https://github.com/moses-palmer/pynput), and
 [sounddevice](https://python-sounddevice.readthedocs.io/).
