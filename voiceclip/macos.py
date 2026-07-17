@@ -128,11 +128,13 @@ def copy_paste_and_restore(text):
     previous = _get_clipboard()
 
     # Copy our text. pbcopy's communicate() is synchronous — the
-    # clipboard is committed when copy_to_clipboard returns. The small
-    # remaining delay is a grace period for slow (Electron) apps to
-    # observe the pasteboard change before the keystroke lands.
+    # pasteboard is committed when copy_to_clipboard returns, and the
+    # target app reads it only while processing Cmd+V, strictly after we
+    # post it. No delay needed; PASTE_DELAY defaults to 0 and exists only
+    # as an escape hatch for apps that prove otherwise.
     copy_to_clipboard(text)
-    time.sleep(PASTE_DELAY)
+    if PASTE_DELAY:
+        time.sleep(PASTE_DELAY)
 
     _send_cmd_v()
 
