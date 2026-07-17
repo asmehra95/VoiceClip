@@ -134,7 +134,11 @@ def _start_server(model_path: str, timeout: float | None = None) -> bool:
         "-t", "6",
         "-bs", "5",  # beam search — whisper.cpp defaults to greedy (-1)
         "-l", "en" if config.ENGLISH_ONLY else "auto",
-        "--convert",  # use ffmpeg to convert incoming audio to proper format
+        # No --convert: the server decodes uploads in-process via miniaudio,
+        # which resamples any WAV rate natively. Skipping the per-request
+        # ffmpeg subprocess + temp-file round trip saves 60-90ms per
+        # dictation. Requires whisper.cpp >= v1.9.0 — older servers had a
+        # broken in-memory decode path and need --convert to work at all.
     ]
     if config.INITIAL_PROMPT:
         cmd.extend(["--prompt", config.INITIAL_PROMPT])
