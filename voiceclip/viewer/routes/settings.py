@@ -35,7 +35,9 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
         "group": "Dictation",
         "type": "select",
         "restart_required": True,
-        "choices": ["whisper", "whisper_cpp", "parakeet"],
+        # "auto" picks whisper_cpp when its binaries + model are present
+        # (install.sh sets them up), mlx-whisper otherwise.
+        "choices": ["auto", "whisper", "whisper_cpp", "parakeet"],
     },
     "model": {
         "group": "Dictation",

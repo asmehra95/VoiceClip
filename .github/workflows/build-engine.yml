@@ -1,0 +1,71 @@
+# Builds the prebuilt speech-engine binaries that install.sh downloads.
+#
+# Trigger: push a tag like `engine-v1.9.1` (the suffix documents which
+# whisper.cpp version is pinned below — keep them in sync).
+#
+# Produces self-contained (statically linked) arm64 binaries with Core ML
+# enabled, so the Whisper encoder runs on the Apple Neural Engine. The
+# binaries have no dependencies outside macOS system frameworks; models
+# are downloaded separately by install.sh from the official HuggingFace
+# repo. Assets are attached to a GitHub release, which install.sh fetches
+# via /releases/latest/download/.
+
+name: Build speech engine binaries
+
+on:
+  push:
+    tags: ["engine-v*"]
+
+permissions:
+  contents: write
+
+env:
+  WHISPER_CPP_VERSION: v1.9.1
+
+jobs:
+  build:
+    runs-on: macos-14  # arm64 (Apple Silicon) runner
+    steps:
+      - name: Build whisper.cpp (static, Core ML)
+        run: |
+          git clone --depth 1 --branch "$WHISPER_CPP_VERSION" \
+            https://github.com/ggml-org/whisper.cpp
+          cd whisper.cpp
+          cmake -B build \
+            -DWHISPER_COREML=1 \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j 3 --target whisper-server whisper-cli
+
+      - name: Sanity-check binaries
+        run: |
+          # Self-contained: no dylibs outside /usr/lib and /System
+          for bin in whisper-server whisper-cli; do
+            if otool -L "whisper.cpp/build/bin/$bin" | tail -n +2 \
+               | grep -v "/usr/lib\|/System"; then
+              echo "ERROR: $bin has non-system dependencies"; exit 1
+            fi
+            file "whisper.cpp/build/bin/$bin" | grep -q arm64
+          done
+          whisper.cpp/build/bin/whisper-server --help > /dev/null
+
+      - name: Package with checksums
+        run: |
+          mkdir -p dist
+          cp whisper.cpp/build/bin/whisper-server dist/whisper-server-coreml-arm64
+          cp whisper.cpp/build/bin/whisper-cli dist/whisper-cli-coreml-arm64
+          cd dist
+          for f in whisper-server-coreml-arm64 whisper-cli-coreml-arm64; do
+            shasum -a 256 "$f" | awk '{print $1}' > "$f.sha256"
+          done
+          ls -la
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body: |
+            Prebuilt whisper.cpp ${{ env.WHISPER_CPP_VERSION }} binaries for
+            VoiceClip's fast speech engine (Apple Silicon, Core ML enabled,
+            statically linked). Downloaded automatically by install.sh —
+            not intended for manual installation.

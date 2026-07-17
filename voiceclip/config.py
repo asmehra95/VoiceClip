@@ -74,6 +74,34 @@ PARAKEET_MODELS = {
 VALID_ENGINES = ("whisper", "whisper_cpp", "parakeet")
 
 
+def _whisper_cpp_available(model_id: str) -> bool:
+    """True when the fast whisper.cpp engine can actually serve requests:
+    a server binary and a GGML file for `model_id` both exist.
+
+    Mirrors the search paths in engine_whisper_cpp — kept inline because
+    engine modules import config, so config can't import them back.
+    """
+    import glob
+
+    server = os.environ.get("VOICECLIP_WHISPER_CPP_SERVER")
+    if not server:
+        for cand in ("~/.voiceclip/bin/whisper-server",
+                     "~/whisper.cpp/build/bin/whisper-server"):
+            cand = os.path.expanduser(cand)
+            if os.path.isfile(cand):
+                server = cand
+                break
+    if not server or not os.path.isfile(server):
+        return False
+
+    models_dir = os.environ.get(
+        "VOICECLIP_WHISPER_CPP_MODELS",
+        os.path.expanduser("~/.voiceclip/models"),
+    )
+    # Glob catches quantized variants too (e.g. ggml-medium-q5_0.bin).
+    return bool(glob.glob(os.path.join(models_dir, f"ggml-{model_id}*.bin")))
+
+
 # ---------------------------------------------------------------------------
 # Config file path
 # ---------------------------------------------------------------------------
@@ -304,12 +332,19 @@ def load():
     _raw = cfg
 
     # Apply env var overrides (env vars always win)
-    ENGINE = os.environ.get("VOICECLIP_ENGINE", cfg.get("engine", "whisper"))
+    MODEL = os.environ.get("VOICECLIP_MODEL", cfg.get("model", "large-v3-turbo"))
+
+    # Engine — "auto" (the default) picks the fast whisper.cpp engine when
+    # its binaries and model are present (install.sh provisions them into
+    # ~/.voiceclip), and falls back to the pip-installed mlx-whisper
+    # engine otherwise. Explicit values are honored as-is.
+    ENGINE = os.environ.get("VOICECLIP_ENGINE", cfg.get("engine", "auto"))
+    if ENGINE == "auto":
+        ENGINE = "whisper_cpp" if _whisper_cpp_available(MODEL) else "whisper"
+        log.info("Engine auto-selected: %s", ENGINE)
     if ENGINE not in VALID_ENGINES:
         log.warning("Invalid engine '%s', using 'whisper'", ENGINE)
         ENGINE = "whisper"
-
-    MODEL = os.environ.get("VOICECLIP_MODEL", cfg.get("model", "large-v3-turbo"))
 
     PARAKEET_MODEL = os.environ.get(
         "VOICECLIP_PARAKEET_MODEL",

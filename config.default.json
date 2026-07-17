@@ -1,4 +1,5 @@
 {
+  "engine": "auto",
   "model": "large-v3-turbo",
   "english_only": true,
   "persona": "default",

@@ -104,6 +104,10 @@ land in well under one on recent Apple Silicon, with better accuracy than
 before. Your clipboard is preserved, your audio is deleted immediately
 after transcription, and the whole thing idles at zero cost.
 
+All of this is set up automatically by `install.sh` — no compiler, no
+manual model wrangling. If the fast engine can't be provisioned, VoiceClip
+falls back to a standard engine and keeps working.
+
 ---
 
 ## Install
@@ -117,8 +121,18 @@ bash install.sh
 
 The installer checks for Apple Silicon + Python 3.10-3.13 + ffmpeg, creates
 a virtualenv at `~/.voiceclip/.venv`, installs pinned dependencies, and
-drops a `voiceclip` symlink in `~/.local/bin`. Takes about 2 minutes on
-first run. Re-running is safe — your config and history are preserved.
+drops a `voiceclip` symlink in `~/.local/bin`. Re-running is safe — your
+config and history are preserved.
+
+It also sets up the **fast speech engine** automatically: a small prebuilt
+binary (checksum-verified, no compiler or Xcode needed) plus the speech
+model, so dictation runs on the GPU and Neural Engine from day one — this
+is what the [Built for speed](#built-for-speed) section describes. The
+model downloads are ~2.8 GB, and the final step optimizes the model for
+your Neural Engine — a one-time pass that can take a few minutes. If any
+of this fails (offline, for instance), VoiceClip quietly falls back to
+the standard engine and everything still works; re-run `install.sh` later
+to pick up the fast engine.
 
 > **Python 3.14 note.** `pyobjc` has a known incompatibility with Python
 > 3.14 that can break the hotkey listener. Use Python 3.10-3.13 for now.

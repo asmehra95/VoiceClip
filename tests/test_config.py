@@ -341,3 +341,77 @@ class TestResearchProvider:
                            "mlx-community/FromEnv-4bit")
         config.load()
         assert config.RESEARCH_LOCAL_MODEL == "mlx-community/FromEnv-4bit"
+
+
+class TestEngineAuto:
+    """Engine 'auto' resolves to whisper_cpp only when its binaries and
+    model are actually present; otherwise the pip-installed mlx engine."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_engine_detection(self, tmp_path, monkeypatch):
+        """Point detection at controlled temp paths so results don't
+        depend on what's installed on the machine running the tests."""
+        self.server_bin = tmp_path / "bin" / "whisper-server"
+        self.models_dir = tmp_path / "models"
+        monkeypatch.setenv("VOICECLIP_WHISPER_CPP_SERVER", str(self.server_bin))
+        monkeypatch.setenv("VOICECLIP_WHISPER_CPP_MODELS", str(self.models_dir))
+        monkeypatch.delenv("VOICECLIP_ENGINE", raising=False)
+        yield
+
+    def _provision(self, model_file="ggml-large-v3-turbo.bin"):
+        self.server_bin.parent.mkdir(parents=True, exist_ok=True)
+        self.server_bin.write_bytes(b"fake binary")
+        self.models_dir.mkdir(parents=True, exist_ok=True)
+        (self.models_dir / model_file).write_bytes(b"fake model")
+
+    def test_auto_picks_whisper_cpp_when_provisioned(self):
+        self._provision()
+        config.load()
+        assert config.ENGINE == "whisper_cpp"
+
+    def test_auto_falls_back_without_binaries(self):
+        # Models present, binary missing
+        self.models_dir.mkdir(parents=True, exist_ok=True)
+        (self.models_dir / "ggml-large-v3-turbo.bin").write_bytes(b"fake")
+        config.load()
+        assert config.ENGINE == "whisper"
+
+    def test_auto_falls_back_without_model(self):
+        # Binary present, model missing
+        self.server_bin.parent.mkdir(parents=True, exist_ok=True)
+        self.server_bin.write_bytes(b"fake binary")
+        config.load()
+        assert config.ENGINE == "whisper"
+
+    def test_auto_matches_quantized_model_files(self, tmp_path):
+        cfg_path = os.path.join(str(tmp_path), "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"model": "medium"}, f)
+        self._provision(model_file="ggml-medium-q5_0.bin")
+
+        config.load()
+        assert config.ENGINE == "whisper_cpp"
+
+    def test_explicit_engine_is_honored(self, tmp_path):
+        """An explicit engine choice bypasses auto-detection entirely."""
+        self._provision()
+        cfg_path = os.path.join(str(tmp_path), "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"engine": "whisper"}, f)
+
+        config.load()
+        assert config.ENGINE == "whisper"
+
+    def test_env_var_beats_auto(self, monkeypatch):
+        self._provision()
+        monkeypatch.setenv("VOICECLIP_ENGINE", "whisper")
+        config.load()
+        assert config.ENGINE == "whisper"
+
+    def test_invalid_engine_falls_back_to_whisper(self, tmp_path):
+        cfg_path = os.path.join(str(tmp_path), "config.json")
+        with open(cfg_path, "w") as f:
+            json.dump({"engine": "bogus"}, f)
+
+        config.load()
+        assert config.ENGINE == "whisper"
