@@ -44,9 +44,11 @@ MIN_AUDIO_DURATION = 0.3  # Seconds
 MAX_RECORDING_SECONDS = 120
 TEMP_PREFIX = "voiceclip_"
 MIN_HOLD_SECONDS = 0.3    # Taps shorter than this are ignored
-PASTE_DELAY = 0.02        # Copy → paste grace period. pbcopy is synchronous,
-                          # so this only exists for slow (Electron) apps to
-                          # observe the pasteboard change before Cmd+V lands.
+PASTE_DELAY = 0.0         # Copy → paste grace period. Deterministically safe
+                          # at 0: pbcopy commits the pasteboard before it
+                          # exits, and the target app reads the clipboard only
+                          # when it processes Cmd+V — strictly afterwards.
+                          # Kept as a knob in case some app ever proves weird.
 
 # HuggingFace repos for each Whisper model variant
 MODELS = {
