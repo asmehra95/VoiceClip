@@ -67,7 +67,22 @@ _ENV_VARS_TO_CLEAR = [
     "VOICECLIP_PATTERNS_LOCAL_MODEL",
     "VOICECLIP_PATTERNS_OPENAI_MODEL",
     "VOICECLIP_PATTERNS_ANTHROPIC_MODEL",
+    "VOICECLIP_ENGINE",
 ]
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_engine_detection(tmp_path_factory, monkeypatch):
+    """Engine 'auto' detection must not see the developer machine's real
+    whisper.cpp install. Point detection at empty paths so config.load()
+    in any test resolves auto → 'whisper' (the historical default) unless
+    a test explicitly provisions fake binaries/models of its own.
+    """
+    empty = tmp_path_factory.mktemp("no-engine")
+    monkeypatch.setenv("VOICECLIP_WHISPER_CPP_SERVER", str(empty / "whisper-server"))
+    monkeypatch.setenv("VOICECLIP_WHISPER_CPP_MODELS", str(empty / "models"))
+    monkeypatch.delenv("VOICECLIP_ENGINE", raising=False)
+    yield
 
 
 @pytest.fixture

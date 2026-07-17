@@ -14,6 +14,7 @@ No real whisper-server is spawned; process/health/transport are all
 monkeypatched module attributes.
 """
 
+import os
 import time
 
 import pytest
@@ -237,3 +238,29 @@ class TestKeepWarmPing:
         eng.keep_warm_ping("large-v3-turbo")
 
         assert not pings
+
+
+class TestFindBinary:
+    """Binary resolution prefers installer-managed ~/.voiceclip/bin, then
+    the from-source build, and returns the source path (even if missing)
+    so error messages stay actionable."""
+
+    def test_prefers_installed_bin(self, monkeypatch):
+        installed = os.path.expanduser("~/.voiceclip/bin/whisper-server")
+        monkeypatch.setattr(
+            eng.os.path, "isfile", lambda p: p == installed,
+        )
+        assert eng._find_binary("whisper-server") == installed
+
+    def test_falls_back_to_source_build(self, monkeypatch):
+        source = os.path.expanduser("~/whisper.cpp/build/bin/whisper-server")
+        monkeypatch.setattr(
+            eng.os.path, "isfile", lambda p: p == source,
+        )
+        assert eng._find_binary("whisper-server") == source
+
+    def test_returns_source_path_when_nothing_exists(self, monkeypatch):
+        monkeypatch.setattr(eng.os.path, "isfile", lambda p: False)
+        assert eng._find_binary("whisper-cli") == os.path.expanduser(
+            "~/whisper.cpp/build/bin/whisper-cli"
+        )

@@ -24,14 +24,31 @@ import urllib.error
 
 log = logging.getLogger(__name__)
 
-# Paths — configurable via env vars for flexibility
+# Paths — configurable via env vars for flexibility.
+# Binary search order: the installer-managed prebuilt binaries in
+# ~/.voiceclip/bin (what install.sh downloads from GitHub releases) first,
+# then a from-source build at ~/whisper.cpp/build/bin. Env vars win over both.
+def _find_binary(name: str) -> str:
+    """Return the first existing candidate path for a whisper.cpp binary.
+
+    Falls back to the source-build path even when missing so error
+    messages point somewhere actionable.
+    """
+    candidates = [
+        os.path.expanduser(f"~/.voiceclip/bin/{name}"),
+        os.path.expanduser(f"~/whisper.cpp/build/bin/{name}"),
+    ]
+    for cand in candidates:
+        if os.path.isfile(cand):
+            return cand
+    return candidates[-1]
+
+
 WHISPER_CPP_BIN = os.environ.get(
-    "VOICECLIP_WHISPER_CPP_BIN",
-    os.path.expanduser("~/whisper.cpp/build/bin/whisper-cli"),
+    "VOICECLIP_WHISPER_CPP_BIN", _find_binary("whisper-cli"),
 )
 WHISPER_CPP_SERVER_BIN = os.environ.get(
-    "VOICECLIP_WHISPER_CPP_SERVER",
-    os.path.expanduser("~/whisper.cpp/build/bin/whisper-server"),
+    "VOICECLIP_WHISPER_CPP_SERVER", _find_binary("whisper-server"),
 )
 WHISPER_CPP_MODELS_DIR = os.environ.get(
     "VOICECLIP_WHISPER_CPP_MODELS",
