@@ -1,9 +1,11 @@
 """macOS-specific utilities: clipboard, paste, notifications, sounds, permissions.
 
 Performance notes:
-- notify() and paste() use Popen (fire-and-forget, never block)
+- notify() uses Popen (fire-and-forget, never blocks)
 - Sound file paths are cached after first check
-- PASTE_DELAY reduced to 50ms (sufficient for most apps)
+- Cmd+V is posted in-process via pynput (~1ms). The previous osascript
+  spawn cost ~185ms per paste — an AppleScript interpreter launch to
+  press one key. Same CGEvent mechanism, same Accessibility permission.
 """
 
 import logging
@@ -15,6 +17,27 @@ import time
 from voiceclip.config import PASTE_DELAY
 
 log = logging.getLogger(__name__)
+
+# Keyboard controller for posting the paste keystroke. Created lazily so
+# importing this module (doctor, tests) doesn't touch the event system.
+_kb_controller = None
+
+
+def _send_cmd_v() -> bool:
+    """Post Cmd+V via pynput's CGEvent backend. Returns True on success."""
+    global _kb_controller
+    try:
+        if _kb_controller is None:
+            from pynput.keyboard import Controller
+            _kb_controller = Controller()
+        from pynput.keyboard import Key
+        with _kb_controller.pressed(Key.cmd):
+            _kb_controller.press("v")
+            _kb_controller.release("v")
+        return True
+    except Exception as e:
+        log.warning("Paste keystroke failed: %s", e)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -104,20 +127,14 @@ def copy_paste_and_restore(text):
     # Save what's currently on the clipboard
     previous = _get_clipboard()
 
-    # Copy our text
+    # Copy our text. pbcopy's communicate() is synchronous — the
+    # clipboard is committed when copy_to_clipboard returns. The small
+    # remaining delay is a grace period for slow (Electron) apps to
+    # observe the pasteboard change before the keystroke lands.
     copy_to_clipboard(text)
-
-    # Paste synchronously — wait for the keystroke to be dispatched
     time.sleep(PASTE_DELAY)
-    try:
-        subprocess.run(
-            ["osascript", "-e",
-             'tell application "System Events" to keystroke "v" using command down'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=2,
-        )
-    except Exception as e:
-        log.warning("Paste failed: %s", e)
+
+    _send_cmd_v()
 
     # Restore after a delay — the paste keystroke was dispatched via
     # osascript but the target app needs time to actually process Cmd+V
@@ -130,16 +147,9 @@ def copy_paste_and_restore(text):
 
 
 def paste():
-    """Simulate Cmd+V to paste into the active app. Non-blocking."""
+    """Simulate Cmd+V to paste into the active app."""
     time.sleep(PASTE_DELAY)
-    try:
-        subprocess.Popen(
-            ["osascript", "-e",
-             'tell application "System Events" to keystroke "v" using command down'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-    except OSError:
-        pass
+    _send_cmd_v()
 
 
 # ---------------------------------------------------------------------------
