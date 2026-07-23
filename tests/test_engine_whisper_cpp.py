@@ -43,14 +43,16 @@ class FakeProc:
 
 
 @pytest.fixture
-def engine_state(monkeypatch):
+def engine_state(monkeypatch, tmp_path):
     """Reset module state to 'server up and healthy' with fakes."""
     proc = FakeProc()
     monkeypatch.setattr(eng, "_server_proc", proc)
+    monkeypatch.setattr(eng, "_adopted_pid", None)
     monkeypatch.setattr(eng, "_server_ready", True)
     monkeypatch.setattr(eng, "_last_restart_attempt", 0.0)
     monkeypatch.setattr(eng, "_server_health_check", lambda: True)
     monkeypatch.setattr(eng, "_resolve_model_path", lambda mid: f"/fake/{mid}.bin")
+    monkeypatch.setattr(eng, "MARKER_PATH", str(tmp_path / "whisper-server.json"))
     yield proc
 
 
@@ -264,3 +266,135 @@ class TestFindBinary:
         assert eng._find_binary("whisper-cli") == os.path.expanduser(
             "~/whisper.cpp/build/bin/whisper-cli"
         )
+
+
+FAKE_CMD = ["/fake/whisper-server", "-m", "/fake/model.bin",
+            "--port", "8178", "-l", "en"]
+
+
+def _write_fake_marker(pid=4242, signature=None, port=None):
+    import json
+
+    if signature is None:
+        signature = eng._server_signature(FAKE_CMD)
+    if port is None:
+        port = eng.WHISPER_CPP_PORT
+    with open(eng.MARKER_PATH, "w") as f:
+        json.dump({"pid": pid, "port": port, "signature": signature}, f)
+
+
+class TestServerAdoption:
+    """load() adopts a healthy server left by a previous session instead
+    of reloading the model — the fix for the Core ML/ANE recompile stall
+    on every app restart."""
+
+    @pytest.fixture(autouse=True)
+    def _no_own_proc(self, engine_state, monkeypatch):
+        # Adoption happens at load() time, before any owned process exists.
+        monkeypatch.setattr(eng, "_server_proc", None)
+        monkeypatch.setattr(eng, "_server_ready", False)
+        yield
+
+    def test_adopts_matching_healthy_server(self, monkeypatch):
+        _write_fake_marker(pid=4242)
+        monkeypatch.setattr(eng, "_pid_is_whisper_server", lambda p: p == 4242)
+
+        assert eng._try_adopt(FAKE_CMD) is True
+        assert eng._adopted_pid == 4242
+        assert eng._server_ready is True
+
+    def test_retires_server_on_signature_mismatch(self, monkeypatch):
+        _write_fake_marker(pid=4242, signature="stale-signature")
+        monkeypatch.setattr(eng, "_pid_is_whisper_server", lambda p: p == 4242)
+        killed = []
+        monkeypatch.setattr(eng, "_terminate_pid", lambda p: killed.append(p))
+        # After the retire, nothing answers on the port.
+        monkeypatch.setattr(eng, "_server_health_check", lambda: False)
+
+        assert eng._try_adopt(FAKE_CMD) is False
+        assert killed == [4242]
+        assert eng._read_marker() is None  # marker cleaned up
+
+    def test_dead_pid_means_no_adoption(self, monkeypatch):
+        _write_fake_marker(pid=4242)
+        monkeypatch.setattr(eng, "_pid_is_whisper_server", lambda p: False)
+        monkeypatch.setattr(eng, "_server_health_check", lambda: False)
+
+        assert eng._try_adopt(FAKE_CMD) is False
+        assert eng._adopted_pid is None
+        assert eng._read_marker() is None
+
+    def test_pid_reuse_never_adopts_or_kills(self, monkeypatch):
+        """A reused pid (alive but not whisper-server) must be left alone."""
+        _write_fake_marker(pid=4242)
+        monkeypatch.setattr(eng, "_pid_is_whisper_server", lambda p: False)
+        monkeypatch.setattr(eng, "_server_health_check", lambda: False)
+        killed = []
+        monkeypatch.setattr(eng, "_terminate_pid", lambda p: killed.append(p))
+
+        assert eng._try_adopt(FAKE_CMD) is False
+        assert killed == []
+
+    def test_wrong_port_marker_ignored(self, monkeypatch):
+        _write_fake_marker(pid=4242, port=9999)
+        monkeypatch.setattr(eng, "_pid_is_whisper_server", lambda p: True)
+        monkeypatch.setattr(eng, "_server_health_check", lambda: False)
+
+        assert eng._try_adopt(FAKE_CMD) is False
+
+
+class TestSignature:
+    def test_stable_for_same_inputs(self):
+        assert eng._server_signature(FAKE_CMD) == eng._server_signature(FAKE_CMD)
+
+    def test_changes_with_cmd(self):
+        other = FAKE_CMD[:-1] + ["auto"]  # different language arg
+        assert eng._server_signature(FAKE_CMD) != eng._server_signature(other)
+
+    def test_changes_when_model_file_changes(self, tmp_path):
+        model = tmp_path / "model.bin"
+        model.write_bytes(b"v1")
+        cmd = ["/fake/whisper-server", "-m", str(model), "-l", "en"]
+        sig1 = eng._server_signature(cmd)
+        model.write_bytes(b"v2 longer")  # different size
+        assert eng._server_signature(cmd) != sig1
+
+
+class TestShutdownHandover:
+    def test_shutdown_leaves_healthy_server_running(self, engine_state):
+        _write_fake_marker(pid=engine_state.pid)
+
+        eng.shutdown()
+
+        assert engine_state.poll() is None  # not terminated
+        assert eng._read_marker() is not None  # marker kept for adoption
+
+    def test_shutdown_removes_marker_when_server_dead(self, engine_state):
+        _write_fake_marker(pid=engine_state.pid)
+        engine_state.kill()
+
+        eng.shutdown()
+
+        assert eng._read_marker() is None
+
+    def test_kill_server_terminates_adopted_pid(self, engine_state, monkeypatch):
+        monkeypatch.setattr(eng, "_server_proc", None)
+        monkeypatch.setattr(eng, "_adopted_pid", 4242)
+        _write_fake_marker(pid=4242)
+        killed = []
+        monkeypatch.setattr(eng, "_terminate_pid", lambda p: killed.append(p))
+
+        eng._kill_server()
+
+        assert killed == [4242]
+        assert eng._adopted_pid is None
+        assert eng._read_marker() is None
+
+    def test_is_server_alive_tracks_adopted_pid(self, engine_state, monkeypatch):
+        monkeypatch.setattr(eng, "_server_proc", None)
+        monkeypatch.setattr(eng, "_adopted_pid", 4242)
+        monkeypatch.setattr(eng, "_pid_is_whisper_server", lambda p: p == 4242)
+        assert eng._is_server_alive() is True
+
+        monkeypatch.setattr(eng, "_pid_is_whisper_server", lambda p: False)
+        assert eng._is_server_alive() is False

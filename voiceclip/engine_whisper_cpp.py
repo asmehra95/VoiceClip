@@ -74,6 +74,14 @@ SERVER_RESTART_TIMEOUT = int(os.environ.get("VOICECLIP_WHISPER_CPP_RESTART_TIMEO
 # keeps crashing can't stall every dictation with a doomed restart.
 _RESTART_COOLDOWN = 60
 
+# Marker file describing the running server (pid, port, config signature).
+# Written on server start and read on the next launch so a still-healthy
+# server can be adopted instead of reloaded — reloading the Core ML
+# encoder costs a minute+ whenever macOS has purged its ANE compile cache.
+MARKER_PATH = os.path.expanduser(os.environ.get(
+    "VOICECLIP_WHISPER_CPP_MARKER", "~/.voiceclip/whisper-server.json",
+))
+
 # Map config model names → GGML filenames
 _MODEL_FILES = {
     "large-v3": "ggml-large-v3.bin",
@@ -96,6 +104,7 @@ _MODEL_FILES = {
 # timeout, so two threads *can* reach the lifecycle code concurrently —
 # without the lock they could double-spawn servers or kill each other's.
 _server_proc = None
+_adopted_pid = None  # server inherited from a previous VoiceClip session
 _server_ready = False
 _last_restart_attempt = 0.0  # rate-limits automatic server restarts
 _lifecycle_lock = threading.Lock()
@@ -125,22 +134,8 @@ def _resolve_model_path(model_id: str) -> str:
 # Server management
 # ---------------------------------------------------------------------------
 
-def _start_server(model_path: str, timeout: float | None = None) -> bool:
-    """Start whisper-server as a background process. Returns True on success.
-
-    `timeout` bounds the wait for readiness; defaults to
-    SERVER_START_TIMEOUT (generous, for startup). Mid-session restarts
-    pass SERVER_RESTART_TIMEOUT instead.
-    """
-    global _server_proc, _server_ready
-
-    if timeout is None:
-        timeout = SERVER_START_TIMEOUT
-
-    if not os.path.isfile(WHISPER_CPP_SERVER_BIN):
-        log.warning("whisper-server binary not found at %s", WHISPER_CPP_SERVER_BIN)
-        return False
-
+def _build_cmd(model_path: str) -> list:
+    """Build the whisper-server command line from the current config."""
     from voiceclip import config
 
     cmd = [
@@ -159,6 +154,157 @@ def _start_server(model_path: str, timeout: float | None = None) -> bool:
     ]
     if config.INITIAL_PROMPT:
         cmd.extend(["--prompt", config.INITIAL_PROMPT])
+    return cmd
+
+
+def _server_signature(cmd: list) -> str:
+    """Hash of everything that defines the server's behavior: the full
+    command line (binary, model, language, prompt, port) plus the mtimes
+    and sizes of the binary and model files — so a rebuilt binary or
+    re-downloaded model is never adopted stale."""
+    import hashlib
+    import json
+
+    parts = {"cmd": cmd}
+    for key, path in (("bin", cmd[0]), ("model", cmd[cmd.index("-m") + 1])):
+        try:
+            st = os.stat(path)
+            parts[key] = [int(st.st_mtime), st.st_size]
+        except OSError:
+            parts[key] = None
+    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
+
+
+def _read_marker() -> dict | None:
+    import json
+
+    try:
+        with open(MARKER_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _write_marker(pid: int, signature: str):
+    import json
+
+    try:
+        os.makedirs(os.path.dirname(MARKER_PATH), exist_ok=True)
+        with open(MARKER_PATH, "w") as f:
+            json.dump({"pid": pid, "port": WHISPER_CPP_PORT,
+                       "signature": signature}, f)
+    except OSError as e:
+        log.warning("Could not write server marker: %s", e)
+
+
+def _remove_marker():
+    try:
+        os.unlink(MARKER_PATH)
+    except OSError:
+        pass
+
+
+def _pid_is_whisper_server(pid: int) -> bool:
+    """True when `pid` is alive AND is a whisper-server process. The
+    command check guards against PID reuse — we must never adopt (or
+    later kill) an unrelated process that inherited the pid."""
+    try:
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "comm="],
+            capture_output=True, text=True, timeout=2,
+        )
+        return "whisper-server" in out.stdout
+    except Exception:
+        return False
+
+
+def _terminate_pid(pid: int):
+    """Politely stop an external whisper-server we know by pid."""
+    import signal
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    for _ in range(10):
+        if not _pid_is_whisper_server(pid):
+            return
+        time.sleep(0.5)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def _try_adopt(cmd: list) -> bool:
+    """Adopt a still-running server from a previous session if its config
+    signature matches. Retires it when the signature doesn't match (the
+    port must be free for the replacement). Returns True on adoption."""
+    global _adopted_pid, _server_ready
+
+    marker = _read_marker()
+    if marker and marker.get("port") == WHISPER_CPP_PORT:
+        pid = marker.get("pid")
+        if pid and _pid_is_whisper_server(pid):
+            if (marker.get("signature") == _server_signature(cmd)
+                    and _server_health_check()):
+                _adopted_pid = pid
+                _server_ready = True
+                log.info(
+                    "Adopted running whisper-server (pid=%d) — "
+                    "model already loaded, no Core ML reload needed", pid,
+                )
+                return True
+            # Config changed or server unhealthy — retire it.
+            log.info("Retiring previous whisper-server (pid=%d): "
+                     "configuration changed", pid)
+            _terminate_pid(pid)
+        _remove_marker()
+
+    # Something without a marker is answering on our port (e.g. a server
+    # left by a pre-adoption version of VoiceClip). Evict it so
+    # _start_server can bind.
+    if _server_health_check():
+        _evict_port_squatter()
+    return False
+
+
+def _evict_port_squatter():
+    """Kill whisper-server processes bound to our port that we have no
+    marker for. Only ever touches processes verified to be whisper-server."""
+    try:
+        out = subprocess.run(
+            ["/usr/sbin/lsof", "-ti", f":{WHISPER_CPP_PORT}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in out.stdout.split():
+            pid = int(line)
+            if _pid_is_whisper_server(pid):
+                log.info("Evicting unmarked whisper-server on port %d "
+                         "(pid=%d)", WHISPER_CPP_PORT, pid)
+                _terminate_pid(pid)
+    except Exception as e:
+        log.warning("Port eviction check failed: %s", e)
+
+
+def _start_server(model_path: str, timeout: float | None = None) -> bool:
+    """Start whisper-server as a background process. Returns True on success.
+
+    `timeout` bounds the wait for readiness; defaults to
+    SERVER_START_TIMEOUT (generous, for startup). Mid-session restarts
+    pass SERVER_RESTART_TIMEOUT instead.
+    """
+    global _server_proc, _server_ready, _adopted_pid
+
+    if timeout is None:
+        timeout = SERVER_START_TIMEOUT
+
+    if not os.path.isfile(WHISPER_CPP_SERVER_BIN):
+        log.warning("whisper-server binary not found at %s", WHISPER_CPP_SERVER_BIN)
+        return False
+
+    _adopted_pid = None  # a newly spawned server supersedes any adoption
+    cmd = _build_cmd(model_path)
 
     try:
         _server_proc = subprocess.Popen(
@@ -184,6 +330,7 @@ def _start_server(model_path: str, timeout: float | None = None) -> bool:
         if _server_health_check():
             elapsed = time.time() - started
             _server_ready = True
+            _write_marker(_server_proc.pid, _server_signature(cmd))
             log.info("whisper-server ready on port %d (pid=%d) after %.1fs",
                      WHISPER_CPP_PORT, _server_proc.pid, elapsed)
             return True
@@ -212,7 +359,7 @@ def _ensure_server(model_id: str, timeout: float) -> None:
         which reloads the model on every call (~40s with a Core ML
         encoder).
     """
-    global _server_ready, _last_restart_attempt
+    global _server_ready, _last_restart_attempt, _adopted_pid
 
     with _lifecycle_lock:
         if _server_ready and _is_server_alive():
@@ -224,7 +371,9 @@ def _ensure_server(model_id: str, timeout: float) -> None:
                 _server_ready = True
             return
 
-        # Process is gone — the ready flag is meaningless now.
+        # Process is gone — the ready flag and any adopted pid are
+        # meaningless now.
+        _adopted_pid = None
         _server_ready = False
 
         if time.time() - _last_restart_attempt <= _RESTART_COOLDOWN:
@@ -251,8 +400,8 @@ def _server_health_check() -> bool:
 
 
 def _kill_server():
-    """Terminate the server process."""
-    global _server_proc, _server_ready
+    """Terminate the server process (owned or adopted) and drop the marker."""
+    global _server_proc, _server_ready, _adopted_pid
     _server_ready = False
     if _server_proc is not None:
         try:
@@ -264,13 +413,19 @@ def _kill_server():
             except Exception:
                 pass
         _server_proc = None
+    elif _adopted_pid is not None:
+        _terminate_pid(_adopted_pid)
+    _adopted_pid = None
+    _remove_marker()
 
 
 def _is_server_alive() -> bool:
-    """Check if our server process is still running."""
-    if _server_proc is None:
-        return False
-    return _server_proc.poll() is None
+    """Check if our server process (owned or adopted) is still running."""
+    if _server_proc is not None:
+        return _server_proc.poll() is None
+    if _adopted_pid is not None:
+        return _pid_is_whisper_server(_adopted_pid)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -278,10 +433,22 @@ def _is_server_alive() -> bool:
 # ---------------------------------------------------------------------------
 
 def load(model_id: str):
-    """Start the whisper-server with the given model."""
+    """Start — or adopt — the whisper-server for the given model.
+
+    shutdown() deliberately leaves the server running, so if a healthy
+    server from a previous session was started with an identical
+    configuration (same binary, model, language, prompt — captured in
+    the marker signature), we adopt it instead of spawning a new one.
+    That skips the model reload entirely, and with it the Core ML
+    encoder recompile that macOS forces whenever it has purged its ANE
+    cache (up to a minute+ on every app restart otherwise).
+    """
     model_path = _resolve_model_path(model_id)
 
-    # Kill existing server if running with a different model
+    if _try_adopt(_build_cmd(model_path)):
+        return
+
+    # Kill our own previous server if any (model switch within a session)
     if _server_proc is not None:
         _kill_server()
 
@@ -470,8 +637,21 @@ def keep_warm_ping(model_id: str):
 
 
 def shutdown():
-    """Clean shutdown — kill the server. Called on VoiceClip exit."""
-    _kill_server()
+    """Called on VoiceClip exit. Deliberately leaves the server running.
+
+    The next launch adopts it via load() when the configuration still
+    matches, skipping the model reload — and with it the Core ML/ANE
+    recompile that macOS forces after purging its compile cache, which
+    otherwise turns every app restart into a minute-long stall. An idle
+    whisper-server costs nothing but pageable memory. It is retired
+    automatically the moment a launch finds its configuration changed.
+    """
+    if _server_ready and _is_server_alive():
+        pid = _server_proc.pid if _server_proc is not None else _adopted_pid
+        log.info("Leaving speech engine warm for next launch (pid=%s)", pid)
+    else:
+        # Nothing healthy to hand over — don't leave a stale marker.
+        _remove_marker()
 
 
 def model_label(model_id: str) -> str:

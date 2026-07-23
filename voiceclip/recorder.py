@@ -133,6 +133,44 @@ def _recorder_loop(conn):
             _stream_box[0] = None
             return False
 
+    def _close_stream():
+        """Stop and close the current stream, tolerating a dead one."""
+        old = _stream_box[0]
+        _stream_box[0] = None
+        if old is not None:
+            try:
+                old.stop()
+                old.close()
+            except Exception:
+                pass
+
+    def _refresh_devices() -> bool:
+        """Tear down and re-initialize PortAudio, then reopen the stream
+        on the *current* system default input.
+
+        PortAudio snapshots the device list (and the default device) at
+        initialization — a long-running process never sees a
+        default-device change. When a headset connects or disconnects
+        mid-session, the old stream keeps 'running' but captures
+        silence, and every dictation gets rejected until the app is
+        restarted. A full terminate/initialize cycle (~100-300ms, always
+        run outside a recording) is the only way to get a fresh snapshot.
+        """
+        _close_stream()
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception as e:
+            print(f"[recorder] ⚠️  PortAudio reinit failed: {e}", flush=True)
+            return False
+        try:
+            fresh_default = sd.default.device[0]
+        except Exception as e:
+            print(f"[recorder] ⚠️  Device query failed after reinit: {e}",
+                  flush=True)
+            return False
+        return _open_stream(force_device=fresh_default)
+
     def _check_device_change() -> bool:
         """If the default input device changed, or the stream has gone
         stale (no callbacks in _STREAM_STALE_SECONDS), reopen.
@@ -160,11 +198,11 @@ def _recorder_loop(conn):
         elif stream_stale:
             print(
                 "[recorder] ⚠️  Audio stream stale (no callbacks in "
-                f"{_STREAM_STALE_SECONDS}s — likely sleep/wake). "
-                "Reopening stream...",
+                f"{_STREAM_STALE_SECONDS}s — likely sleep/wake or device "
+                "change). Refreshing audio devices...",
                 flush=True,
             )
-            if not _open_stream(force_device=current_default):
+            if not _refresh_devices():
                 return False
 
         return True
@@ -293,6 +331,17 @@ def _recorder_loop(conn):
                 reason = "too short" if duration_native < MIN_AUDIO_DURATION else "silence"
                 print(f"[recorder] Rejected: {reason}", flush=True)
                 conn.send(None)
+                if reason == "silence":
+                    # A full recording of silence usually means the
+                    # default input device changed or died mid-session
+                    # (headset connect/disconnect, call started) and our
+                    # stale PortAudio snapshot can't see it. Refresh so
+                    # the NEXT dictation lands on the real device. Cheap
+                    # (~100-300ms), off the critical path, and harmless
+                    # when the mic is just genuinely muted.
+                    print("[recorder] Refreshing audio devices after "
+                          "silent capture...", flush=True)
+                    _refresh_devices()
                 continue
 
             audio = np.concatenate(captured, axis=0).flatten()
