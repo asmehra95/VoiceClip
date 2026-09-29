@@ -11,6 +11,7 @@ call takes 5-15s, and we were paying it on every summary or patterns click.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -880,6 +881,111 @@ def complete_anthropic_with_web_search(
         elif btype == "server_tool_use" or "web_search" in (btype or ""):
             used_web = True
     return "".join(text_parts).strip(), _dedupe_sources(sources), used_web
+
+
+# ---------------------------------------------------------------------------
+# Cloud (the user's OWN gateway — LiteLLM behind the SSM tunnel)
+# ---------------------------------------------------------------------------
+# Unlike "openai"/"anthropic", the "cloud" provider talks to the user's own
+# transcription stack: same base URL, API key, and tunnel that dictation
+# already uses (cloud.base_url / cloud.api_key in config.json). The model id
+# is a GATEWAY ROUTE NAME (e.g. "assistant" -> vLLM Qwen3.5), not a
+# HuggingFace repo or a vendor model string.
+
+
+def cloud_request(path: str, payload: dict, *, timeout: float = 60.0) -> bytes:
+    """POST JSON to the user's cloud gateway. Returns the raw response body.
+
+    Raises RuntimeError with an actionable message on connection failures
+    (tunnel down is the common case) and non-200 responses. The API key is
+    sent as a Bearer header and never logged.
+    """
+    import http.client
+    import urllib.parse
+
+    from voiceclip import config
+
+    base = (config.CLOUD_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        raise RuntimeError(
+            "The 'cloud' provider uses your own transcription gateway, but "
+            "cloud.base_url is not configured. Set it in "
+            "~/.voiceclip/config.json (Settings → Cloud)."
+        )
+    parsed = urllib.parse.urlparse(base)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    key = (config.CLOUD_API_KEY or "").strip()
+    body = json.dumps(payload).encode()
+    conn_cls = (http.client.HTTPSConnection if parsed.scheme == "https"
+                else http.client.HTTPConnection)
+    conn = conn_cls(parsed.hostname, port, timeout=timeout)
+    try:
+        conn.request("POST", (parsed.path or "") + path, body=body, headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+            **({"Authorization": f"Bearer {key}"} if key else {}),
+        })
+        resp = conn.getresponse()
+        data = resp.read()
+    except OSError as e:
+        raise RuntimeError(
+            f"Could not reach your cloud gateway at {base} — {e}. "
+            f"Is the tunnel up? Check `voiceclip cloud status`."
+        ) from e
+    finally:
+        conn.close()
+    if resp.status != 200:
+        raise RuntimeError(
+            f"Cloud gateway returned HTTP {resp.status}: "
+            f"{data[:200].decode('utf-8', 'replace')}"
+        )
+    return data
+
+
+def complete_cloud(
+    *,
+    system: str,
+    user: str,
+    model_id: str = "assistant",
+    max_tokens: int = 400,
+    temperature: float | None = None,
+    turns: list[dict] | None = None,
+    json_mode: bool = False,
+    timeout: float = 60.0,
+) -> str:
+    """Chat completion via the user's own gateway. Returns text only.
+
+    `turns` (optional prior conversation, alternating user/assistant
+    messages) slots between the system prompt and the current user turn —
+    the assistant feature needs multi-turn; every other caller is
+    single-shot like the sibling providers.
+
+    We ask vLLM to disable Qwen's thinking mode (chat_template_kwargs) AND
+    strip any leaked <think> blocks via _extract_answer — models behind the
+    gateway can change without every caller re-learning this.
+    """
+    messages: list[dict] = [{"role": "system", "content": system}]
+    if turns:
+        messages.extend(turns)
+    messages.append({"role": "user", "content": user})
+    payload: dict[str, Any] = {
+        "model": model_id,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    data = cloud_request("/v1/chat/completions", payload, timeout=timeout)
+    try:
+        text = json.loads(data)["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError, ValueError) as e:
+        raise RuntimeError(
+            f"Unexpected response from cloud gateway: {data[:200]!r}"
+        ) from e
+    return _extract_answer(text).strip()
 
 
 # ---------------------------------------------------------------------------

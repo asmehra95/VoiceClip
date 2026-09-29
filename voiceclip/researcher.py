@@ -91,6 +91,14 @@ def _run(provider: str, topic: str, model_id: str) -> tuple[str, list, bool]:
         return llm_provider.complete_anthropic_with_web_search(
             system=_SYSTEM_PROMPT_CLOUD, user=user_content, model_id=model_id,
         )
+    if provider == "cloud":
+        # Own gateway: no server-side web search tool. Same contract as
+        # local — answers from model knowledge, no sources.
+        text = llm_provider.complete_cloud(
+            system=_SYSTEM_PROMPT_LOCAL, user=user_content,
+            model_id=model_id, max_tokens=1200,
+        )
+        return text, [], False
     raise RuntimeError(f"unknown research provider: {provider}")
 
 
@@ -184,6 +192,11 @@ def _humanize_provider_error(err: Exception, provider: str, model_id: str) -> st
                 f"variant (e.g. Qwen2.5-3B-Instruct-4bit). Original: {raw[:200]}"
             )
         return f"Local research failed: {raw[:300]}"
+
+    if provider == "cloud":
+        # Errors from cloud_request already carry actionable text
+        # (tunnel down, bad key, route missing).
+        return f"Cloud research failed: {raw[:300]}"
 
     # Common case: bad model string → 404 with "model" in the message
     if "model" in low and ("not found" in low or "does not exist" in low

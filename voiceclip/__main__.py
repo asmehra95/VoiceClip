@@ -111,6 +111,42 @@ def _build_parser() -> argparse.ArgumentParser:
     # onboard subcommand — re-run the first-run walkthrough
     sub.add_parser("onboard", help="Run (or re-run) the first-launch walkthrough")
 
+    # cloud subcommand — manage the cloud transcription server (EC2)
+    cloud = sub.add_parser(
+        "cloud", help="Manage the cloud transcription server (EC2)",
+    )
+    cloud.add_argument(
+        "action", choices=["status", "stop", "start"],
+        help="status: show instance state; stop: park it (billing stops, "
+             "data persists); start: bring it back",
+    )
+
+    # agent — always-on duplex voice agent (Pipecat pipeline on the
+    # cloud stack; tools for search/journal/notes/summaries/cloud control).
+    sub.add_parser(
+        "agent",
+        help="Start the always-on voice agent (talk naturally; barge-in "
+             "to interrupt; tools for web search, journal, notes, and "
+             "cloud control)",
+    )
+
+    # private-cloud-deploy — full bring-up on a fresh AWS account.
+    # Wraps scripts/deploy.sh in the service repo (burner accounts expire
+    # weekly; this makes redeployment one command from anywhere).
+    pcd = sub.add_parser(
+        "private-cloud-deploy",
+        help="Deploy the whole private transcription stack to a fresh "
+             "AWS account (CDK + provisioning + key + client config)",
+    )
+    pcd.add_argument("region", nargs="?", default=None,
+                     help="AWS region (default: eu-central-1)")
+    pcd.add_argument("--az", type=int, choices=[0, 1], default=None,
+                     help="AZ index — retry the other AZ on GPU capacity errors")
+    pcd.add_argument("--repo", type=str, default=None,
+                     help="Path to the service repo (default: "
+                          "cloud.deploy_repo in config, else "
+                          "~/Desktop/AI Transcription Service)")
+
     return parser
 
 
@@ -373,6 +409,9 @@ def _run_voiceclip():
     print(f"\n  Engine:       {config.ENGINE}")
     if config.ENGINE == "parakeet":
         print(f"  Model:        {config.PARAKEET_MODEL}")
+    elif config.ENGINE == "cloud":
+        print(f"  Model:        {config.CLOUD_MODEL}")
+        print(f"  Server:       {config.CLOUD_BASE_URL}")
     else:
         print(f"  Model:        {config.MODEL}")
     print(f"  English only: {config.ENGLISH_ONLY}")
@@ -445,6 +484,18 @@ def _run_voiceclip():
     build_patterns()
     cleanup_stale_temps()
 
+    # Cloud engine: bring up the SSM tunnel to the private gateway if it
+    # isn't already reachable (manual tunnel or local dev stack). Failure
+    # is non-fatal — dictation errors will point at the fix.
+    if config.ENGINE == "cloud":
+        from voiceclip import tunnel
+        print("\n  Checking cloud gateway...")
+        if tunnel.ensure():
+            print("  ✅ Cloud gateway reachable")
+        else:
+            print("  ⚠️  Cloud gateway not reachable — check `voiceclip cloud"
+                  " status` (instance running?) and your AWS credentials")
+
     print("\n  Starting audio recorder...")
     recorder = Recorder()
     handlers: list = []
@@ -457,6 +508,13 @@ def _run_voiceclip():
             try:
                 from voiceclip.engine_whisper_cpp import shutdown as shutdown_whisper
                 shutdown_whisper()
+            except Exception:
+                pass
+        # Close the managed SSM tunnel if we started one
+        if config.ENGINE == "cloud":
+            try:
+                from voiceclip import tunnel
+                tunnel.shutdown()
             except Exception:
                 pass
         for h in handlers:
@@ -574,6 +632,38 @@ def _run_voiceclip():
             pname = config.hotkey_display_name(config.POLISH_HOTKEY)
             print(f"  ✨  Hold {pname} to dictate with LLM polish ({config.POLISH_HOTKEY_MODE} mode)")
 
+    assistant_active = False
+    if config.ASSISTANT_HOTKEY:
+        used_keys = {config.HOTKEY.strip().lower()}
+        for k in (config.REFLECTION_HOTKEY, config.POLISH_HOTKEY):
+            if k:
+                used_keys.add(k.strip().lower())
+        if config.ASSISTANT_HOTKEY.strip().lower() in used_keys:
+            log.error(
+                "assistant_hotkey '%s' collides with another hotkey; disabled",
+                config.ASSISTANT_HOTKEY,
+            )
+        elif config.ENGINE != "cloud":
+            log.warning("assistant_hotkey set but engine is not 'cloud'; "
+                        "the assistant needs the cloud stack — disabled")
+        else:
+            assistant_key_obj = config.resolve_hotkey(config.ASSISTANT_HOTKEY)
+            assistant_handler = HotkeyHandler(
+                recorder,
+                hotkey=assistant_key_obj,
+                mode=config.ASSISTANT_HOTKEY_MODE,
+                profile="assistant",
+                start_sound="Tink",
+                done_sound="Glass",
+                label="VoiceClip 🗣️",
+            )
+            assistant_handler.start()
+            handlers.append(assistant_handler)
+            assistant_active = True
+            aname = config.hotkey_display_name(config.ASSISTANT_HOTKEY)
+            print(f"  🗣️  Hold {aname} to ask your journal-aware assistant "
+                  f"({config.ASSISTANT_HOTKEY_MODE} mode; press again to interrupt)")
+
     # Validate the hotkey listener actually registered with macOS.
     # pynput's `Listener.start()` returns immediately but the underlying
     # CFRunLoop only checks AXIsProcessTrusted (Accessibility grant) on
@@ -586,6 +676,8 @@ def _run_voiceclip():
         _validate_hotkey_listener(reflection_handler, "reflection")
     if polish_active:
         _validate_hotkey_listener(polish_handler, "polished")
+    if assistant_active:
+        _validate_hotkey_listener(assistant_handler, "assistant")
 
     try:
         while True:
@@ -659,6 +751,43 @@ def _validate_hotkey_listener(handler, label: str):
         )
 
 
+def _handle_private_cloud_deploy(args) -> int:
+    """Run the service repo's deploy.sh with inherited stdio.
+
+    The script is idempotent and can take 15-25 min (quota waits, model
+    pulls) — we hand the terminal over to it rather than wrapping output.
+    """
+    import os
+    import subprocess
+
+    from voiceclip import config
+    config.load()
+    repo = (
+        args.repo
+        or (config._raw.get("cloud") or {}).get("deploy_repo")
+        or os.path.expanduser("~/Desktop/AI Transcription Service")
+    )
+    script = os.path.join(repo, "scripts", "deploy.sh")
+    if not os.path.isfile(script):
+        print(f"deploy.sh not found at {script}", file=sys.stderr)
+        print("Point me at your service repo checkout with --repo PATH, or set "
+              '"cloud": {"deploy_repo": "..."} in ~/.voiceclip/config.json.',
+              file=sys.stderr)
+        return 1
+    cmd = [script]
+    if args.region:
+        cmd.append(args.region)
+    if args.az is not None:
+        if not args.region:
+            cmd.append("eu-central-1")  # deploy.sh reads --az after the region
+        cmd += ["--az", str(args.az)]
+    try:
+        return subprocess.run(cmd, cwd=repo).returncode
+    except KeyboardInterrupt:
+        print("\nInterrupted — deploy.sh is resumable; re-run to continue.")
+        return 130
+
+
 def main():
     parser = _build_parser()
     args = parser.parse_args()
@@ -679,6 +808,18 @@ def main():
     elif args.command == "onboard":
         from voiceclip.onboard import run as run_onboard
         run_onboard(force=True)
+    elif args.command == "cloud":
+        from voiceclip import config
+        from voiceclip.cloud_control import run as run_cloud
+        config.load()
+        sys.exit(run_cloud(args.action))
+    elif args.command == "private-cloud-deploy":
+        sys.exit(_handle_private_cloud_deploy(args))
+    elif args.command == "agent":
+        from voiceclip import config
+        from voiceclip.agent import run as run_agent
+        config.load()
+        sys.exit(run_agent())
     else:
         _run_voiceclip()
 

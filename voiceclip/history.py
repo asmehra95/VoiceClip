@@ -22,7 +22,9 @@ DB_PATH = os.path.join(CONFIG_DIR, "history.db")
 _conn: sqlite3.Connection | None = None
 _write_lock = threading.Lock()
 
-VALID_KINDS = ("transcription", "reflection")
+# "question"/"assistant": the two halves of a voice-assistant turn, so the
+# conversation itself is searchable journal context for future questions.
+VALID_KINDS = ("transcription", "reflection", "question", "assistant")
 
 
 # ---------------------------------------------------------------------------
@@ -279,12 +281,20 @@ def save(
         if _conn is None:
             return None
         with _write_lock:
-            from voiceclip.config import ENGINE, MODEL, PARAKEET_MODEL, PERSONA
+            from voiceclip.config import (
+                CLOUD_MODEL,
+                ENGINE,
+                MODEL,
+                PARAKEET_MODEL,
+                PERSONA,
+            )
             active_model = PARAKEET_MODEL if ENGINE == "parakeet" else MODEL
             # For whisper_cpp, include quantization info in the model label
             if ENGINE == "whisper_cpp":
                 from voiceclip.engine_whisper_cpp import model_label
                 active_model = model_label(MODEL)
+            elif ENGINE == "cloud":
+                active_model = CLOUD_MODEL
             cur = _conn.execute(
                 "INSERT INTO transcriptions "
                 "(timestamp, raw_text, formatted_text, duration_seconds, "

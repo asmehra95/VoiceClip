@@ -206,7 +206,11 @@ cat > "$INSTALL_DIR/run" << 'LAUNCHER'
 #!/bin/bash
 INSTALL_DIR="$HOME/.voiceclip"
 source "$INSTALL_DIR/.venv/bin/activate"
-python -m voiceclip "$@"
+# The package lives in $INSTALL_DIR (not installed into the venv), so put it
+# on PYTHONPATH. `python -m` prepends the cwd, which means a repo checkout
+# still wins when launching from inside it — handy for development.
+export PYTHONPATH="$INSTALL_DIR${PYTHONPATH:+:$PYTHONPATH}"
+exec python -m voiceclip "$@"
 LAUNCHER
 chmod +x "$INSTALL_DIR/run"
 

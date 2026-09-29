@@ -62,6 +62,11 @@ def polish(raw_text: str) -> str:
                 system=system, user=user,
                 model_id=model_id, max_tokens=2000,
             )
+        elif provider == "cloud":
+            result = llm_provider.complete_cloud(
+                system=system, user=user,
+                model_id=model_id, max_tokens=2000,
+            )
         else:
             return raw_text
 

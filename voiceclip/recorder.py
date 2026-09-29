@@ -38,8 +38,17 @@ log = logging.getLogger(__name__)
 # Child process
 # ---------------------------------------------------------------------------
 
-def _recorder_loop(conn):
-    """Entry point for the recorder child process."""
+def _recorder_loop(conn, tap_conn=None, tap_enabled=False):
+    """Entry point for the recorder child process.
+
+    When `tap_enabled`, live audio is also delivered incrementally over
+    `tap_conn` as 24kHz mono PCM16 chunks (for streaming transcription),
+    followed by an empty-bytes end-of-recording marker after each
+    recording flushes. The WAV-on-stop path is unchanged and remains the
+    source of truth — the tap is a best-effort optimization stream.
+    """
+    import collections
+
     import numpy as np
     import sounddevice as sd
     import soundfile as sf
@@ -47,6 +56,67 @@ def _recorder_loop(conn):
     rec_event = threading.Event()
     frames_lock = threading.Lock()
     frames = []
+
+    # --- Live-audio tap (streaming transcription) -------------------------
+    TAP_RATE = 24000
+    tap_deque = collections.deque()  # float32 chunks pending tap delivery
+    # Serializes flushes between the periodic tap thread and the STOP
+    # handler's synchronous drain — concurrent popleft would interleave
+    # audio out of order.
+    _tap_lock = threading.Lock()
+
+    def _tap_flush() -> bool:
+        """Resample + send everything pending on the tap. True if sent."""
+        with _tap_lock:
+            chunks = []
+            while True:
+                try:
+                    chunks.append(tap_deque.popleft())
+                except IndexError:
+                    break
+        if not chunks:
+            return False
+        try:
+            audio = np.concatenate(chunks, axis=0).flatten()
+            sr = _native_sr_box[0] or TAP_RATE
+            if sr != TAP_RATE:
+                n_out = int(len(audio) * TAP_RATE / sr)
+                audio = np.interp(
+                    np.linspace(0, len(audio) - 1, n_out),
+                    np.arange(len(audio)), audio,
+                )
+            pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+            tap_conn.send_bytes(pcm.tobytes())
+            return True
+        except Exception:
+            return False
+
+    def _tap_loop():
+        """Every ~150ms while recording, ship new audio to the parent.
+        The end-of-recording marker is sent SYNCHRONOUSLY by the STOP
+        handler (_tap_drain_and_mark), never inferred here — a transition
+        poll at 150ms granularity misses rapid stop→start cycles, leaving
+        the previous dictation's pump alive to eat the next one's audio."""
+        while True:
+            if rec_event.is_set() and tap_deque:
+                _tap_flush()
+            time.sleep(0.15)
+
+    def _tap_drain_and_mark():
+        """Flush any remaining tap audio and send the end-of-recording
+        marker. Called synchronously from the STOP handler so exactly one
+        marker terminates every recording, in order, no matter how fast
+        the next recording starts."""
+        if not (tap_enabled and tap_conn is not None):
+            return
+        try:
+            _tap_flush()
+            tap_conn.send_bytes(b"")
+        except Exception:
+            pass
+
+    if tap_enabled and tap_conn is not None:
+        threading.Thread(target=_tap_loop, daemon=True).start()
 
     # Running RMS state — updated in the callback for instant silence detection
     # Using a lock to prevent data races between the callback and STOP handler
@@ -232,6 +302,8 @@ def _recorder_loop(conn):
                 return
             with frames_lock:
                 frames.append(indata.copy())
+            if tap_enabled and tap_conn is not None:
+                tap_deque.append(indata.copy())
             # Track running RMS — dot product is allocation-free and ~2x faster
             flat = indata.flat
             sq_sum = float(np.dot(flat, flat))
@@ -296,6 +368,7 @@ def _recorder_loop(conn):
 
         elif msg == RecorderCmd.STOP:
             rec_event.clear()
+            _tap_drain_and_mark()
 
             # Grab frames under lock — no sleep needed, event is already cleared
             # so no new frames will be appended
@@ -383,12 +456,26 @@ class Recorder:
         self._proc = None
         self._alive = False
         self._pipe_lock = threading.Lock()
+        self._tap_conn = None
 
     def start(self):
         """Spawn the child process and wait for it to be ready."""
+        # Live-audio tap for streaming transcription: only plumbed when the
+        # cloud engine with streaming is active, so other engines never pay
+        # for it (an unread pipe would eventually block the tap thread).
+        from voiceclip import config
+        tap_enabled = (
+            config.ENGINE == "cloud" and getattr(config, "CLOUD_STREAMING", False)
+        )
+        tap_parent, tap_child = (
+            multiprocessing.Pipe(duplex=False) if tap_enabled else (None, None)
+        )
+        self._tap_conn = tap_parent
+
         parent_conn, child_conn = multiprocessing.Pipe()
         self._proc = multiprocessing.Process(
-            target=_recorder_loop, args=(child_conn,), daemon=True
+            target=_recorder_loop, args=(child_conn, tap_child, tap_enabled),
+            daemon=True,
         )
         self._proc.start()
         self._conn = parent_conn
@@ -440,6 +527,22 @@ class Recorder:
     @property
     def alive(self):
         return self._alive
+
+    @property
+    def tap(self):
+        """Read end of the live-audio tap (24kHz PCM16 chunks; empty bytes
+        = end-of-recording marker), or None when streaming is disabled."""
+        return self._tap_conn
+
+    def drain_tap(self):
+        """Discard any pending tap data (e.g. before a new recording)."""
+        if self._tap_conn is None:
+            return
+        try:
+            while self._tap_conn.poll(0):
+                self._tap_conn.recv_bytes()
+        except (EOFError, OSError):
+            pass
 
     def _send_recv(self, cmd, timeout=5):
         """Send a command and return the response. Thread-safe."""

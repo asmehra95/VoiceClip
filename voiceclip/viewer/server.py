@@ -105,14 +105,17 @@ class Handler(BaseHTTPRequestHandler):
         # but the button still does nothing" class of bug.
         if rel_path == "index.html":
             try:
-                js_mtime = int((_STATIC_DIR / "app.js").stat().st_mtime)
-                css_mtime = int((_STATIC_DIR / "app.css").stat().st_mtime)
+                import re as _re
+
+                def _versioned(match):
+                    name = match.group(1)
+                    asset = _STATIC_DIR / name
+                    if not asset.exists():
+                        return match.group(0)
+                    return f"/static/{name}?v={int(asset.stat().st_mtime)}"
+
                 text = data.decode("utf-8")
-                text = text.replace(
-                    "/static/app.js", f"/static/app.js?v={js_mtime}"
-                ).replace(
-                    "/static/app.css", f"/static/app.css?v={css_mtime}"
-                )
+                text = _re.sub(r"/static/([\w.-]+\.(?:js|css))", _versioned, text)
                 data = text.encode("utf-8")
             except Exception as e:
                 log.debug("Could not version static assets: %s", e)
@@ -155,9 +158,38 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(url.query)
         handler(self, query)
 
+    def _post_request_is_same_origin(self) -> bool:
+        """Reject cross-site POSTs (CSRF) and DNS-rebinding requests.
+
+        The viewer binds to localhost, but any web page the user visits can
+        still fire requests AT localhost. State-changing endpoints (settings,
+        cloud park/wake, starting the mic-listening agent) must only be
+        reachable from the viewer's own page:
+          - Content-Type must be application/json. Cross-origin JSON POSTs
+            require a CORS preflight, which this server never approves.
+          - Host must be a loopback name (defeats DNS rebinding).
+          - Origin, when sent, must be this same loopback origin.
+        """
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return False
+        loopback = ("127.0.0.1", "localhost", "[::1]")
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].lower()
+        if host not in loopback:
+            return False
+        origin = self.headers.get("Origin")
+        if origin and origin != "null":
+            o = urlparse(origin)
+            if o.hostname not in ("127.0.0.1", "localhost", "::1"):
+                return False
+        return True
+
     def do_POST(self):
         url = urlparse(self.path)
         path = url.path
+        if not self._post_request_is_same_origin():
+            self._json({"error": "cross-origin or non-JSON request rejected"}, status=403)
+            return
 
         # Read body (all our POSTs carry a small JSON blob)
         length = int(self.headers.get("Content-Length", "0") or "0")

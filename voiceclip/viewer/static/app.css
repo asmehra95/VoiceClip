@@ -1403,3 +1403,56 @@ details.summary-details .body {
   color: #c44;
   font-size: 13px;
 }
+
+  /* Cloud server panel (Settings tab) */
+  .cloud-row {
+    display: grid;
+    grid-template-columns: 220px 1fr auto;
+    gap: 14px;
+    align-items: center;
+    padding: 12px 0 4px;
+  }
+  .cloud-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .cloud-status .desc { font-size: 11.5px; color: var(--muted); }
+  .cloud-state { text-transform: capitalize; }
+  .cloud-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--muted);       /* unknown/unavailable */
+    flex: none;
+  }
+  .cloud-dot.running  { background: #34c759; }
+  .cloud-dot.stopped  { background: var(--muted); }
+  .cloud-dot.pending, .cloud-dot.stopping {
+    background: #e1b345;
+    animation: cloud-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes cloud-pulse {
+    50% { opacity: 0.35; }
+  }
+  .cloud-actions { display: flex; gap: 8px; align-items: center; }
+  .cloud-actions button {
+    background: none;
+    color: var(--dim);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .cloud-actions button:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
+  .cloud-actions button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .cloud-msg {
+    color: var(--muted);
+    font-size: 11.5px;
+    padding: 0 0 10px;
+    min-height: 14px;
+  }

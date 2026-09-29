@@ -1,6 +1,13 @@
 {
   "engine": "auto",
   "model": "large-v3-turbo",
+
+  "cloud": {
+    "base_url": "",
+    "api_key": "",
+    "model": "whisper-large-v3"
+  },
+
   "english_only": true,
   "persona": "default",
   "hotkey": "alt_r",

@@ -174,6 +174,8 @@
     $id("queue_view").style.display = view === "queue" ? "" : "none";
     $id("patterns_view").style.display = view === "patterns" ? "" : "none";
     $id("settings_view").style.display = view === "settings" ? "" : "none";
+    $id("agent_view").style.display = view === "agent" ? "" : "none";
+    $id("vocab_view").style.display = view === "vocab" ? "" : "none";
     $id("journal_nav").style.visibility = view === "journal" ? "" : "hidden";
     // Clear stale search on tab-switch
     if (view !== "journal") {
@@ -182,9 +184,12 @@
       si.value = "";
       sc.style.display = "none";
     }
+    if (view !== "agent") agentDeactivate();
     if (view === "queue") loadQueue();
     else if (view === "patterns") loadPatterns();
     else if (view === "settings") loadSettings();
+    else if (view === "agent") agentActivate();
+    else if (view === "vocab") loadVocab();
     else load(state.date);
   }
 
@@ -1451,42 +1456,291 @@
 
   // Plain-language labels and descriptions. Keyed by dotted config key.
   const SETTING_COPY = {
-    "engine":                  ["ASR engine", "Whisper (default) or Parakeet (NVIDIA). Parakeet requires: pip install parakeet-mlx"],
-    "model":                   ["Whisper model", "Larger models are more accurate but slower. Turbo is the sweet spot on Apple Silicon. Tiny / base are fast; large-v3 is highest quality."],
-    "parakeet_model":          ["Parakeet model", "TDT-0.6b-v3 is best speed/quality. Larger models are more accurate but use more memory."],
-    "hotkey":                  ["Hotkey", "Key to hold/press for dictation"],
-    "hotkey_mode":             ["Hotkey mode", "Hold to record, or tap to toggle"],
-    "english_only":            ["English only", "Faster and smaller if all your dictation is English"],
-    "reflection_hotkey":       ["Reflection hotkey", "Separate key for saving a thought (not pasted)"],
-    "reflection_hotkey_mode":  ["Reflection hotkey mode", "Hold or toggle for reflections specifically"],
-    "window_title_capture":    ["Capture window titles", "Stored alongside each entry. Uses Accessibility."],
-    "history":                 ["Save dictations to a journal", "Enables the Journal/Queue/Patterns tabs"],
-    "summaries.provider":      ["Daily summary provider", "'local' runs on your Mac; 'openai'/'anthropic' send a day's entries"],
-    "summaries.local_model":   ["Local model", "e.g. mlx-community/Qwen2.5-7B-Instruct-4bit"],
-    "summaries.openai_model":  ["OpenAI model", null],
-    "summaries.anthropic_model": ["Anthropic model", null],
-    "summaries.style":         ["Summary style", "Descriptive (what you did) or Reflective (what you were thinking)"],
-    "research.provider":       ["Research provider", "Local stays on your Mac (no web search); cloud can search the web per topic."],
-    "research.local_model":    ["Local model", "Reuses mlx-lm. Any HuggingFace repo with -mlx or an MLX-compatible fork."],
-    "research.openai_model":   ["OpenAI model", null],
-    "research.anthropic_model":["Anthropic model", null],
-    "patterns.provider":       ["Patterns provider", "Reads up to a week of entries. 'local' stays on your Mac."],
-    "patterns.local_model":    ["Local model", null],
-    "patterns.openai_model":   ["OpenAI model", null],
-    "patterns.anthropic_model":["Anthropic model", null],
-    "patterns.window_days":    ["Window (days)", "How many days of history to read"],
-    "custom_vocabulary":       ["Custom vocabulary", "Words and phrases that bias dictation. One per line. Names, jargon, acronyms — anything Whisper keeps getting wrong."],
+    "engine":                  ["Engine", "Where speech turns into text"],
+    "model":                   ["Whisper model", "Runs on this Mac — also the cloud fallback"],
+    "parakeet_model":          ["Parakeet model", "Runs on this Mac"],
+    "english_only":            ["English only", "Faster, and no wrong-language mix-ups"],
+    "custom_vocabulary":       ["Custom vocabulary", "Names and jargon to spell right — one per line"],
+    "hotkey":                  ["Dictate", "Transcribe and paste"],
+    "reflection_hotkey":       ["Reflect", "Save a thought to the journal — no paste"],
+    "assistant_hotkey":        ["Ask assistant", "It talks back, grounded in your journal"],
+    "polish_hotkey":           ["Polish & paste", "AI cleans it up before pasting"],
+    "cloud.streaming":         ["Stream while talking", "Text is ready the moment you let go"],
+    "cloud.fallback_engine":   ["If the cloud is down", "Keep dictating on this Mac with this model"],
+    "cloud.base_url":          ["Server URL", null],
+    "cloud.model":             ["Server model", null],
+    "cloud.instance_id":       ["EC2 instance", null],
+    "cloud.region":            ["AWS region", null],
+    "cloud.auto_tunnel":       ["Auto-connect", "Open the secure tunnel when VoiceClip starts"],
+    "history":                 ["Keep a journal", "Powers Journal, Queue and Patterns"],
+    "window_title_capture":    ["Remember the app", "Note which window you dictated into"],
+    "polish_prompt":           ["Polish instructions", null],
+    "ai.model":                ["AI model", "One model for summaries, research, patterns, polish and Ask"],
+    "summaries.provider":      ["Provider", "Who writes your daily recap"],
+    "summaries.style":         ["Style", null],
+    "research.provider":       ["Provider", "Only OpenAI and Anthropic can search the web"],
+    "patterns.provider":       ["Provider", "Reads your last week of entries"],
+    "patterns.window_days":    ["Look back (days)", null],
   };
+  // Every *.local_model / *.openai_model / ... reads simply as "Model"
+  // inside its feature section.
+  for (const f of ["summaries", "research", "patterns"]) {
+    for (const prov of ["local", "openai", "anthropic"]) SETTING_COPY[`${f}.${prov}_model`] = ["Model", null];
+    SETTING_COPY[`${f}.cloud_model`] = ["Model", "Route name on your gateway"];
+  }
+  const KEY_LABELS = {
+    alt_r: "Right ⌥ Option", alt_l: "Left ⌥ Option",
+    ctrl_r: "Right ⌃ Control", ctrl_l: "Left ⌃ Control",
+    shift_r: "Right ⇧ Shift", shift_l: "Left ⇧ Shift",
+    cmd_r: "Right ⌘ Command", cmd_l: "Left ⌘ Command",
+    caps_lock: "⇪ Caps Lock", space: "Space", esc: "Esc",
+  };
+  const CHOICE_LABELS = {
+    "engine": {auto: "Automatic", whisper: "Whisper · this Mac", whisper_cpp: "whisper.cpp · this Mac",
+               parakeet: "Parakeet · this Mac", cloud: "Cloud · your server"},
+    "cloud.fallback_engine": {none: "Off — show an error", whisper: "Whisper on this Mac",
+                              whisper_cpp: "whisper.cpp on this Mac", parakeet: "Parakeet on this Mac"},
+    "model": {tiny: "Tiny — fastest", base: "Base", small: "Small", medium: "Medium",
+              "large-v3-turbo": "Large v3 Turbo — recommended", "large-v3": "Large v3 — most accurate"},
+    "summaries.style": {descriptive: "What I did", reflective: "What I was thinking"},
+  };
+  const PROVIDER_LABELS = {none: "Off", local: "On this Mac", openai: "OpenAI",
+                           anthropic: "Anthropic", cloud: "Your cloud server"};
+  function choiceLabel(key, choice) {
+    if (/hotkey$/.test(key)) return KEY_LABELS[choice] || String(choice).toUpperCase();
+    if (/hotkey_mode$/.test(key)) return {hold: "Hold to talk", toggle: "Tap on / off"}[choice] || choice;
+    if (key.endsWith(".provider")) return PROVIDER_LABELS[choice] || choice;
+    if (key === "parakeet_model") return String(choice).replace("mlx-community/", "");
+    return (CHOICE_LABELS[key] || {})[choice] || choice;
+  }
 
   // Cloud-provider confirm copy, keyed by the dotted setting key.
   // Used by confirmCloudSwitch().
   const CLOUD_DISCLOSURES = {
+    "ai.model": "Every AI feature (daily summaries, research topics, patterns, polish, Ask) will send your entries to this provider.",
     "summaries.provider": "Your entries for each day (every transcription and reflection) will be sent to this provider when a summary is generated.",
     "research.provider":  "The research topic you dictate or type will be sent to this provider. If the model uses its web search tool, that topic also goes to the search backend.",
     "patterns.provider":  "Up to a week of your reflections and daily summaries will be sent in a single prompt.",
   };
 
   let _settingsCache = null;
+
+  // ---------- Vocabulary ----------
+  const VOCAB_KIND = {acronym: "acronym", name: "name", phrase: "phrase"};
+  let _vocab = {terms: [], suggestions: []};
+  async function saveVocab(terms) {
+    const r = await fetch("/api/settings/update", {method: "POST", headers: {"Content-Type": "application/json"},
+                                                   body: JSON.stringify({custom_vocabulary: terms})});
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      $id("vocab_stats").textContent = d.error || "Couldn't save";
+      return false;
+    }
+    return true;
+  }
+  async function loadVocab() {
+    try {
+      _vocab = await (await fetch("/api/vocab")).json();
+    } catch (e) {
+      $id("vocab_suggestions").textContent = "Couldn't load vocabulary.";
+      return;
+    }
+    renderVocab();
+  }
+  function renderVocab() {
+    const terms = _vocab.terms || [];
+    $id("vocab_stats").textContent = `${terms.length} word${terms.length === 1 ? "" : "s"}`;
+    const box = $id("vocab_chips");
+    box.innerHTML = "";
+    $id("vocab_list_head").hidden = terms.length < 12;
+    if (!terms.length) box.appendChild(el("div", {class: "vocab-none"}, "Nothing yet — add a word above or pick from the suggestions."));
+    const q = ($input("vocab_filter").value || "").trim().toLowerCase();
+    const kinds = _vocab.kinds || {};
+    const GROUPS = [["name", "👤 People & names"], ["acronym", "🔠 Acronyms"],
+                    ["phrase", "💬 Terms & phrases"], ["word", "📝 Words"]];
+    for (const [kind, title] of GROUPS) {
+      const words = terms.filter(t => (kinds[t] || "word") === kind && (!q || t.toLowerCase().includes(q)))
+                         .sort((a, b) => a.localeCompare(b, undefined, {sensitivity: "base"}));
+      if (!words.length) continue;
+      const list = el("ul", {class: "vocab-words"});
+      for (const t of words) {
+        list.appendChild(el("li", null, [
+          el("span", {class: "vocab-word"}, t),
+          el("button", {type: "button", class: "vocab-x", "aria-label": `Remove ${t}`, title: "Remove",
+                        onclick: async () => {
+            if (await saveVocab(terms.filter(x => x !== t))) loadVocab();
+          }}, "×"),
+        ]));
+      }
+      box.appendChild(el("section", {class: "vocab-group"}, [
+        el("h4", null, [title, el("span", {class: "vocab-group-count"}, String(words.length))]),
+        list,
+      ]));
+    }
+    if (q && !box.children.length) box.appendChild(el("div", {class: "vocab-none"}, `No words match “${q}”.`));
+    const sug = _vocab.suggestions || [];
+    $id("vocab_scanned").textContent = _vocab.scanned ? `from your last ${_vocab.scanned} entries` : "";
+    const list = $id("vocab_suggestions");
+    list.innerHTML = "";
+    if (!sug.length) {
+      list.appendChild(el("div", {class: "vocab-none"}, "No new suggestions — keep dictating and check back."));
+      return;
+    }
+    for (const s of sug) {
+      list.appendChild(el("div", {class: "vocab-sug"}, [
+        el("div", {class: "vocab-sug-main"}, [
+          el("span", {class: "vocab-sug-term"}, s.term),
+          el("span", {class: `vocab-kind ${s.kind}`}, VOCAB_KIND[s.kind] || s.kind),
+          el("span", {class: "vocab-count"}, `×${s.count}`),
+          el("div", {class: "vocab-example"}, s.example || ""),
+        ]),
+        el("div", {class: "vocab-sug-actions"}, [
+          el("button", {type: "button", class: "primary", onclick: async () => {
+            if (await saveVocab([...terms, s.term])) loadVocab();
+          }}, "Add"),
+          el("button", {type: "button", onclick: async () => {
+            await fetch("/api/vocab/ignore", {method: "POST", headers: {"Content-Type": "application/json"},
+                                              body: JSON.stringify({term: s.term})});
+            loadVocab();
+          }}, "Ignore"),
+        ]),
+      ]));
+    }
+  }
+  async function addVocabFromInput() {
+    const inp = $input("vocab_input");
+    const t = inp.value.trim();
+    if (!t) return;
+    const terms = _vocab.terms || [];
+    if (terms.some(x => x.toLowerCase() === t.toLowerCase())) { inp.value = ""; return; }
+    if (await saveVocab([...terms, t])) { inp.value = ""; loadVocab(); }
+  }
+  $id("vocab_add").addEventListener("click", addVocabFromInput);
+  $input("vocab_filter").addEventListener("input", renderVocab);
+  $input("vocab_input").addEventListener("keydown", ev => { if (ev.key === "Enter") addVocabFromInput(); });
+
+  // ---------- Voice agent ----------
+  const AGENT_STATE_COPY = {
+    idle: "Tap to start talking",
+    starting: "Waking up…",
+    ready: "Listening — just talk",
+    listening: "Hearing you…",
+    thinking: "Thinking…",
+    speaking: "Speaking — interrupt any time",
+    stopped: "Tap to start talking",
+    error: "Something went wrong",
+  };
+  const AGENT_TOOL_COPY = {
+    web_search: "🔎 Searching the web",
+    journal_search: "📓 Looking through your journal",
+    save_note: "📝 Saving a note",
+    daily_summary: "🗓️ Summarizing the day",
+    cloud_status: "☁️ Checking the server",
+    park_server: "🅿️ Parking the server",
+  };
+  const agent = {timer: null, active: false, running: false, after: 0, session: null, state: "idle",
+                 busy: false, quietSince: null, startedAt: 0};
+  function agentSetState(state, message) {
+    agent.state = state;
+    const orb = $id("agent_orb");
+    orb.className = `agent-orb ${state}`;
+    const live = agent.running && state !== "stopped" && state !== "error";
+    orb.setAttribute("aria-label", live ? "Stop the voice agent" : "Start the voice agent");
+    orb.setAttribute("aria-pressed", live ? "true" : "false");
+    $id("agent_state").textContent = message || AGENT_STATE_COPY[state] || state;
+  }
+  function agentAppend(ev) {
+    const log = $id("agent_log");
+    let node = null;
+    if (ev.type === "user") node = el("div", {class: "bubble user"}, ev.text);
+    else if (ev.type === "assistant") node = el("div", {class: "bubble bot"}, ev.text);
+    else if (ev.type === "tool") node = el("div", {class: "tool-chip"}, AGENT_TOOL_COPY[ev.name] || `🛠️ ${ev.name}`);
+    if (!node) return;
+    log.appendChild(node);
+    log.scrollTop = log.scrollHeight;
+    node.scrollIntoView({block: "nearest", behavior: "smooth"});
+  }
+  async function agentPoll() {
+    try {
+      const r = await fetch(`/api/agent/status?after=${agent.after}`);
+      const s = await r.json();
+      if (s.session !== agent.session) {          // new session → fresh transcript
+        agent.session = s.session;
+        agent.after = 0;
+        $id("agent_log").innerHTML = "";
+        return agentPoll();
+      }
+      agent.running = !!s.running;
+      let lastState = null, lastMsg = null;
+      for (const ev of s.events || []) {
+        agent.after = Math.max(agent.after, ev.seq || 0);
+        if (ev.type === "state") { lastState = ev.state; lastMsg = ev.message || null; }
+        else agentAppend(ev);
+      }
+      if (lastState) agentSetState(lastState, lastMsg);
+      else if (!agent.running && !["error", "starting"].includes(agent.state)) agentSetState("idle");
+      // Process died without saying goodbye (crash, missing dependency...)
+      if (!agent.running && agent.state === "starting" && Date.now() - agent.startedAt > 8000) {
+        agentSetState("error", "The agent stopped unexpectedly — details in ~/.voiceclip/agent/agent.log");
+      }
+      // Live mic meter; nudge when it stays near-silent while listening
+      const lvl = typeof s.level === "number" ? s.level : null;
+      $id("agent_meter").style.setProperty("--level", lvl == null ? 0 : lvl);
+      $id("agent_meter").hidden = !(agent.running && lvl != null);
+      if (agent.running && agent.state === "ready" && lvl != null && lvl < 0.15) {
+        agent.quietSince = agent.quietSince || Date.now();
+        if (Date.now() - agent.quietSince > 6000) {
+          $id("agent_state").textContent = "I can't hear you — check your mic input (System Settings → Sound)";
+        }
+      } else {
+        agent.quietSince = null;
+      }
+      if (!$id("agent_log").children.length) {
+        $id("agent_log").appendChild(el("div", {class: "agent-empty"},
+          "Try: “What did I work on this week?” · “Search the web for flights to Lisbon” · “Note that I owe Sam a reply.”"));
+      }
+    } catch (e) { /* viewer restarting — keep polling */ }
+    if (agent.active) agent.timer = setTimeout(agentPoll, agent.running ? 600 : 2500);
+  }
+  function agentActivate() {
+    agent.active = true;
+    clearTimeout(agent.timer);
+    agentPoll();
+  }
+  function agentDeactivate() {
+    agent.active = false;
+    clearTimeout(agent.timer);
+  }
+  $id("agent_orb").addEventListener("click", async () => {
+    if (agent.busy) return;
+    agent.busy = true;
+    const live = agent.running && !["stopped", "error", "idle"].includes(agent.state);
+    try {
+      const path = live ? "/api/agent/stop" : "/api/agent/start";
+      if (live) {
+        agentSetState("stopped", "Stopping…");
+      } else {
+        $id("agent_log").innerHTML = "";
+        agentSetState("starting");
+        agent.running = true;
+        agent.startedAt = Date.now();
+      }
+      const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+      if (!r.ok) {
+        agent.running = false;
+        agentSetState("error", r.status === 404
+          ? "This viewer is out of date — quit `voiceclip view` and start it again"
+          : `Couldn't ${live ? "stop" : "start"} the agent (HTTP ${r.status})`);
+      }
+    } catch (e) {
+      agent.running = false;
+      agentSetState("error", "Lost contact with the viewer — is `voiceclip view` still running?");
+    } finally {
+      agent.busy = false;
+      clearTimeout(agent.timer);
+      agent.timer = setTimeout(agentPoll, 400);
+    }
+  });
 
   async function loadSettings() {
     try {
@@ -1506,74 +1760,403 @@
     loadModels();
   }
 
+  const SETTINGS_GROUPS = [
+    ["Dictation", "🎙️", "voice → text"],
+    ["Hotkeys", "⌨️", "one key per job"],
+    ["AI", "✨", "one model for everything"],
+    ["Remote infra", "☁️", "your server"],
+  ];
+  const _advancedOpen = new Set();
+  // visible_when: {key: value | [values] | "!value" | "!null"} (AND across
+  // keys), or a list of such objects (OR).
+  function _matchCond(cond, values) {
+    return Object.keys(cond).every(k => {
+      const want = cond[k], actual = values[k];
+      if (Array.isArray(want)) return want.includes(actual);
+      if (typeof want === "string" && want.startsWith("!")) {
+        const neg = want.slice(1);
+        if (neg === "null") return actual !== null && actual !== undefined && actual !== "";
+        return actual !== neg;
+      }
+      return actual === want;
+    });
+  }
+  function isSettingVisible(schema, values) {
+    const vw = schema.visible_when;
+    if (!vw) return true;
+    return Array.isArray(vw) ? vw.some(c => _matchCond(c, values)) : _matchCond(vw, values);
+  }
+  function visibilityKeys(vw) {
+    if (!vw) return [];
+    return (Array.isArray(vw) ? vw : [vw]).flatMap(c => Object.keys(c));
+  }
   function renderSettings(data) {
     const slot = document.getElementById("settings_slot");
     slot.innerHTML = "";
     document.getElementById("settings_status").textContent =
-      "Changes save automatically. Some require restarting voiceclip.";
-
-    // Group by schema.group
-    const groups = {};
+      "Saves as you go · ↻ takes effect after a restart";
+    const byGroup = {};
     for (const key in data.schema) {
       const g = data.schema[key].group;
-      if (!groups[g]) groups[g] = [];
-      groups[g].push(key);
+      (byGroup[g] = byGroup[g] || []).push(key);
     }
-
-    const order = ["Dictation", "Reflections", "Polish", "Journal", "Summaries", "Research", "Patterns"];
-    for (const gname of order) {
-      if (!groups[gname]) continue;
-      const groupEl = el("div", {class:"setting-group"}, [
-        el("h3", null, gname),
+    // "<x>_mode" settings render inline next to "<x>" (the hotkey).
+    const paired = new Set(Object.keys(data.schema).filter(k => data.schema[k + "_mode"]).map(k => k + "_mode"));
+    const known = new Set(SETTINGS_GROUPS.map(g => g[0]));
+    const groups = SETTINGS_GROUPS.concat(
+      Object.keys(byGroup).filter(g => !known.has(g)).map(g => [g, "•", ""]));
+    for (const [gname, icon, blurb] of groups) {
+      const keys = (byGroup[gname] || []).filter(
+        k => !paired.has(k) && !data.schema[k].hidden && isSettingVisible(data.schema[k], data.values));
+      if (!keys.length) continue;
+      const groupEl = el("div", {class: "setting-group", "data-group": gname}, [
+        el("h3", null, [
+          el("span", {class: "group-icon", "aria-hidden": "true"}, icon), gname,
+          blurb ? el("span", {class: "group-blurb"}, blurb) : null,
+        ]),
       ]);
-      for (const key of groups[gname]) {
+      const toggles = [];
+      let sectionEl = null, sectionName = null;
+      const advanced = [];
+      for (const key of keys) {
         const s = data.schema[key];
-        if (s.visible_when) {
-          const condKey = Object.keys(s.visible_when)[0];
-          const condVal = s.visible_when[condKey];
-          const actual = data.values[condKey];
-          // Support both single value and array of allowed values
-          const matches = Array.isArray(condVal)
-            ? condVal.includes(actual)
-            : actual === condVal;
-          if (!matches) continue;
+        if (s.advanced) { advanced.push(key); continue; }
+        if (s.type === "bool") { toggles.push(key); continue; }
+        let target = groupEl;
+        if (s.section) {
+          if (s.section !== sectionName) {
+            sectionName = s.section;
+            sectionEl = el("div", {class: "setting-section"}, [el("h4", null, s.section)]);
+            groupEl.appendChild(sectionEl);
+          }
+          target = sectionEl;
         }
-        groupEl.appendChild(renderSettingRow(key, s, data.values[key]));
+        target.appendChild(renderSettingRow(key, s, data.values[key], data));
+      }
+      if (toggles.length) {
+        const grid = el("div", {class: "toggle-grid"});
+        toggles.forEach(k => grid.appendChild(renderToggleChip(k, data.schema[k], data.values[k])));
+        groupEl.appendChild(grid);
+      }
+      if (advanced.length) {
+        const det = el("details", {class: "setting-advanced"}, [
+          el("summary", null, "Connection details"),
+        ]);
+        if (_advancedOpen.has(gname)) det.open = true;
+        det.addEventListener("toggle", () => {
+          if (det.open) _advancedOpen.add(gname); else _advancedOpen.delete(gname);
+        });
+        advanced.forEach(k => det.appendChild(renderSettingRow(k, data.schema[k], data.values[k], data)));
+        groupEl.appendChild(det);
       }
       slot.appendChild(groupEl);
     }
-
+    renderCloudPanel(slot, data);
     renderSystemInfo(data.system || {});
   }
 
-  function renderSettingRow(key, schema, currentValue) {
+  // "Cloud server" panel — instance state + stop/start controls. Shown only
+  // when the cloud engine is selected and an instance is configured.
+  function renderCloudPanel(slot, data) {
+    if (data.values["engine"] !== "cloud") return;
+    if (!data.values["cloud.instance_id"] || !data.values["cloud.region"]) return;
+
+    const dot = el("span", {class:"cloud-dot"});
+    const stateEl = el("span", {class:"cloud-state"}, "checking\u2026");
+    const typeEl = el("span", {class:"desc"}, "");
+    const msgEl = el("div", {class:"cloud-msg"}, "");
+    const tunnelEl = el("span", {class:"cloud-tunnel"}, "");
+    const stopBtn = el("button", null, "Park");
+    const startBtn = el("button", null, "Wake");
+    stopBtn.disabled = startBtn.disabled = true;
+
+    const panel = el("div", {class:"setting-group"}, [
+      el("h3", null, "Cloud server"),
+      el("div", {class:"cloud-row"}, [
+        el("div", {class:"setting-label"}, [
+          el("span", null, "Instance"),
+          el("span", {class:"desc"},
+             `${data.values["cloud.instance_id"]} \u00b7 ${data.values["cloud.region"]}`),
+        ]),
+        el("div", {class:"cloud-status"}, [dot, stateEl, typeEl, tunnelEl]),
+        el("div", {class:"cloud-actions"}, [stopBtn, startBtn]),
+      ]),
+      msgEl,
+    ]);
+    // Which model the server runs (vLLM "assistant" route)
+    const llmSel = document.createElement("select");
+    llmSel.className = "cloud-llm-select";
+    const llmCustom = el("input", {type: "text", class: "cloud-llm-custom", placeholder: "Org/Model-Name on Hugging Face", hidden: "hidden"});
+    const llmApply = el("button", {type: "button"}, "Apply");
+    const llmMsg = el("div", {class: "cloud-msg"}, "");
+    llmApply.disabled = true;
+    const llmRow = el("div", {class: "cloud-llm-row"}, [
+      el("div", {class: "setting-label"}, [
+        el("span", null, "Cloud AI model"),
+        el("span", {class: "desc"}, "What your server runs for AI features, the assistant and the agent"),
+      ]),
+      el("div", {class: "cloud-llm-inputs"}, [llmSel, llmCustom, llmApply]),
+    ]);
+    panel.appendChild(llmRow);
+    panel.appendChild(llmMsg);
+    let llmCurrent = null;
+    fetch("/api/cloud/llm").then(r => r.json()).then(d => {
+      llmCurrent = d.current;
+      llmSel.innerHTML = "";
+      const ids = new Set();
+      for (const c of d.choices || []) {
+        ids.add(c.id);
+        const o = document.createElement("option"); o.value = c.id; o.textContent = c.label; llmSel.appendChild(o);
+      }
+      if (!ids.has(d.current)) {
+        const o = document.createElement("option"); o.value = d.current; o.textContent = d.current; llmSel.appendChild(o);
+      }
+      const custom = document.createElement("option"); custom.value = "__custom__"; custom.textContent = "Custom…";
+      llmSel.appendChild(custom);
+      llmSel.value = d.current;
+    });
+    const llmTarget = () => llmSel.value === "__custom__" ? llmCustom.value.trim() : llmSel.value;
+    const llmSync = () => {
+      llmCustom.hidden = llmSel.value !== "__custom__";
+      llmApply.disabled = !llmTarget() || llmTarget() === llmCurrent;
+    };
+    llmSel.addEventListener("change", llmSync);
+    llmCustom.addEventListener("input", llmSync);
+    llmApply.addEventListener("click", async () => {
+      const model = llmTarget();
+      if (!confirm(`Switch the cloud AI model to ${model}? The server downloads and loads it — AI features pause for a few minutes.`)) return;
+      llmApply.disabled = true;
+      llmMsg.textContent = "Switching…";
+      const r = await fetch("/api/cloud/llm", {method: "POST", headers: {"Content-Type": "application/json"},
+                                               body: JSON.stringify({model})});
+      const res = await r.json().catch(() => ({}));
+      if (!r.ok) { llmMsg.textContent = res.error || `Failed (HTTP ${r.status})`; llmSync(); return; }
+      llmCurrent = model;
+      const t0 = Date.now();
+      const tick = async () => {
+        const secs = Math.round((Date.now() - t0) / 1000);
+        const p = await fetch("/api/cloud/llm?probe=1").then(x => x.json()).catch(() => ({}));
+        if (p.ready && secs > 20) { llmMsg.textContent = `✅ ${model} is live.`; return; }
+        if (secs > 900) { llmMsg.textContent = "Still not answering after 15 min — the model may not fit. Pick another and Apply."; llmSync(); return; }
+        llmMsg.textContent = `Loading on the server… ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+        setTimeout(tick, 10000);
+      };
+      tick();
+    });
+
+    // Live status sits at the top of the Cloud group (not a separate card).
+    const cloudGroup = slot.querySelector('.setting-group[data-group="Remote infra"]');
+    if (cloudGroup) {
+      panel.className = "cloud-inline";
+      panel.firstChild.remove();                   // drop its own heading
+      cloudGroup.insertBefore(panel, cloudGroup.children[1] || null);
+    } else {
+      slot.appendChild(panel);
+    }
+
+    function setState(state, itype) {
+      dot.className = "cloud-dot " + (state || "");
+      stateEl.textContent = state || "unavailable";
+      typeEl.textContent = itype ? itype : "";
+    }
+
+    async function refresh() {
+      try {
+        const r = await fetch("/api/cloud/status");
+        const s = await r.json();
+        if (!r.ok || s.error) {
+          setState("", null);
+          msgEl.textContent = s.error || "Could not query instance.";
+          return;
+        }
+        setState(s.state, s.instance_type);
+        tunnelEl.textContent = s.state === "running"
+          ? (s.tunnel ? "🔒 Tunnel connected" : "Tunnel not connected")
+          : "";
+        tunnelEl.className = "cloud-tunnel" + (s.tunnel ? " up" : "");
+        stopBtn.disabled = s.state !== "running";
+        startBtn.disabled = s.state !== "stopped";
+        msgEl.textContent =
+          s.state === "running"
+            ? "Running \u2014 parks itself after an idle hour."
+            : s.state === "stopped"
+              ? "Parked \u2014 no compute charges. Dictating wakes it up."
+              : s.state === "pending"
+                ? "Starting up \u2014 ready in about 2 minutes."
+                : s.state === "stopping"
+                  ? "Shutting down\u2026"
+                  : "";
+      } catch (e) {
+        setState("", null);
+      }
+    }
+
+    async function control(action) {
+      stopBtn.disabled = startBtn.disabled = true;
+      setState(action === "stop" ? "stopping" : "pending", null);
+      try {
+        const r = await fetch("/api/cloud/control", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({action}),
+        });
+        const res = await r.json();
+        if (!r.ok || res.error) {
+          msgEl.textContent = res.error || "Request failed.";
+        } else if (action === "start") {
+          msgEl.textContent =
+            "Starting \u2014 ready in about 2 minutes. VoiceClip reconnects on its own.";
+        }
+      } catch (e) {
+        msgEl.textContent = "Request failed.";
+      }
+      // State transitions take a while; poll a few times.
+      setTimeout(refresh, 2000);
+      setTimeout(refresh, 10000);
+      setTimeout(refresh, 30000);
+    }
+
+    stopBtn.addEventListener("click", () => {
+      if (confirm("Park the cloud server now? Your next dictation wakes it (about 2 minutes)."))
+        control("stop");
+    });
+    startBtn.addEventListener("click", () => control("start"));
+
+    refresh();
+  }
+
+  // Booleans render as compact chips in a grid (label + switch), not rows.
+  function renderToggleChip(key, schema, value) {
+    const [label, desc] = SETTING_COPY[key] || [key, null];
+    const chip = el("label", {class: "toggle-chip", title: desc || ""});
+    chip.dataset.key = key;
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = Boolean(value);
+    cb.addEventListener("change", () => commitSetting(key, cb.checked));
+    chip.appendChild(el("span", {class: "chip-text"}, [
+      el("span", {class: "chip-label"}, [label,
+        schema.restart_required ? el("span", {class: "restart-mark", "aria-label": "restart required"}, "↻") : null]),
+      desc ? el("span", {class: "chip-desc"}, desc) : null,
+    ]));
+    chip.appendChild(cb);
+    chip.appendChild(el("span", {class: "setting-status", "aria-live": "polite"}, ""));
+    return chip;
+  }
+  function renderSettingRow(key, schema, currentValue, data) {
     const [label, desc] = SETTING_COPY[key] || [key, null];
     const row = el("div", {class:"setting-row"});
     row.dataset.key = key;
-    // Multi-line inputs get a stacked layout so the textarea can breathe.
-    if (schema.type === "text_list") row.classList.add("textarea-row");
-
+    if (schema.type === "text_list" || key === "polish_prompt") row.classList.add("textarea-row");
     const labelEl = el("div", {class:"setting-label"}, [
       el("span", null, [
         label,
         schema.restart_required
-          ? el("span", {class:"restart-pill"}, "restart")
+          ? el("span", {class: "restart-mark", title: "Takes effect after restarting voiceclip",
+                        "aria-label": "restart required"}, "↻")
           : null,
       ]),
       desc ? el("span", {class:"desc"}, desc) : null,
     ]);
     row.appendChild(labelEl);
-
     const inputWrap = el("div", {class:"setting-input"});
-    inputWrap.appendChild(buildSettingInput(key, schema, currentValue));
+    const primary = buildSettingInput(key, schema, currentValue);
+    inputWrap.appendChild(primary);
+    const modeKey = key + "_mode";
+    const modeSchema = data && data.schema[modeKey];
+    if (modeSchema) {
+      row.dataset.modeKey = modeKey;
+      inputWrap.classList.add("paired");
+      const modeInput = buildSettingInput(modeKey, modeSchema, data.values[modeKey]);
+      modeInput.classList.add("mode-select");
+      modeInput.setAttribute("aria-label", `${label} mode`);
+      const syncMode = () => {
+        const v = primary.value;
+        modeInput.hidden = v === "__null__" || v === "" || v == null;
+      };
+      syncMode();
+      primary.addEventListener("change", syncMode);
+      inputWrap.appendChild(modeInput);
+    }
     row.appendChild(inputWrap);
-
-    const status = el("div", {class:"setting-status"}, "");
-    row.appendChild(status);
+    row.appendChild(el("div", {class:"setting-status", "aria-live": "polite"}, ""));
     return row;
   }
 
+  function buildAiModelPicker(key, value) {
+    const sel = document.createElement("select");
+    sel.className = "ai-model-select";
+    const loading = document.createElement("option");
+    loading.textContent = "Loading models…";
+    sel.appendChild(loading);
+    sel.disabled = true;
+    let current = value || "none";
+    fetch("/api/ai/models").then(r => r.json()).then(data => {
+      sel.innerHTML = "";
+      const off = document.createElement("option");
+      off.value = "none"; off.textContent = "Off";
+      sel.appendChild(off);
+      const groups = [["cloud", "Your cloud · private"], ["local", "This Mac · private"],
+                      ["openai", "Third-party"], ["anthropic", "Third-party"]];
+      const made = {};
+      for (const m of data.models || []) {
+        const gl = (groups.find(g => g[0] === m.provider) || [m.provider, m.provider])[1];
+        if (!made[gl]) { made[gl] = document.createElement("optgroup"); made[gl].label = gl; sel.appendChild(made[gl]); }
+        const o = document.createElement("option");
+        o.value = m.value;
+        o.textContent = `${m.label}${m.note ? " — " + m.note : ""}`;
+        o.disabled = !m.available && m.value !== current;
+        made[gl].appendChild(o);
+      }
+      sel.value = current;
+      sel.disabled = false;
+    }).catch(() => {
+      loading.textContent = "Couldn't load models";
+    });
+    sel.addEventListener("change", async () => {
+      const next = sel.value;
+      const prov = next.split(":")[0];
+      const wasThirdParty = ["openai", "anthropic"].includes(current.split(":")[0]);
+      if (["openai", "anthropic"].includes(prov) && !wasThirdParty) {
+        const ok = await confirmCloudSwitch(key, prov === "openai" ? "OpenAI" : "Anthropic");
+        if (!ok) { sel.value = current; return; }
+      }
+      current = next;
+      commitSetting(key, next);
+    });
+    return sel;
+  }
+  // "If the cloud is down" = which LOCAL engine AND model to fall back to,
+  // chosen in one list. Writes cloud.fallback_engine + model/parakeet_model.
+  function buildFallbackPicker(key, value) {
+    const cache = _settingsCache || {schema: {}, values: {}};
+    const sel = document.createElement("select");
+    const add = (val, label, parent) => {
+      const o = document.createElement("option");
+      o.value = val; o.textContent = label; (parent || sel).appendChild(o);
+    };
+    add("none", "Off — show an error");
+    const wg = document.createElement("optgroup"); wg.label = "Whisper · this Mac"; sel.appendChild(wg);
+    for (const m of (cache.schema.model || {}).choices || []) add(`whisper:${m}`, choiceLabel("model", m), wg);
+    const pg = document.createElement("optgroup"); pg.label = "Parakeet · this Mac"; sel.appendChild(pg);
+    for (const m of (cache.schema.parakeet_model || {}).choices || []) add(`parakeet:${m}`, choiceLabel("parakeet_model", m), pg);
+    const v = cache.values;
+    let current = "none";
+    if (value === "whisper" || value === "whisper_cpp") current = `whisper:${v.model}`;
+    else if (value === "parakeet") current = `parakeet:${v.parakeet_model}`;
+    if (value === "whisper_cpp") add(current = `whisper_cpp:${v.model}`, `whisper.cpp · ${choiceLabel("model", v.model)}`);
+    sel.value = current;
+    sel.addEventListener("change", async () => {
+      const [engine, model] = sel.value.split(/:(.*)/s);
+      await commitSetting(key, engine);
+      if (engine === "whisper" || engine === "whisper_cpp") await commitSetting("model", model);
+      if (engine === "parakeet") await commitSetting("parakeet_model", model);
+    });
+    return sel;
+  }
   function buildSettingInput(key, schema, value) {
+    if (schema.type === "ai_model") return buildAiModelPicker(key, value);
+    if (key === "cloud.fallback_engine") return buildFallbackPicker(key, value);
     if (schema.type === "bool") {
       const cb = document.createElement("input");
       cb.type = "checkbox";
@@ -1590,13 +2173,13 @@
       if (schema.type === "select_or_none") {
         const opt = document.createElement("option");
         opt.value = "__null__";
-        opt.textContent = "(off)";
+        opt.textContent = "Off";
         sel.appendChild(opt);
       }
       for (const choice of schema.choices) {
         const opt = document.createElement("option");
         opt.value = choice;
-        opt.textContent = choice;
+        opt.textContent = choiceLabel(key, choice);
         sel.appendChild(opt);
       }
       // Select the current value; '__null__' for off
@@ -1758,7 +2341,8 @@
         body: JSON.stringify({[key]: value}),
       });
       const data = await r.json();
-      const row = document.querySelector(`.setting-row[data-key="${key}"]`);
+      const row = document.querySelector(
+        `.setting-row[data-key="${key}"], .setting-row[data-mode-key="${key}"], .toggle-chip[data-key="${key}"]`);
       // querySelector returns Element; cast to HTMLElement so .style works.
       const status = /** @type {HTMLElement | null} */ (
         row ? row.querySelector(".setting-status") : null
@@ -1786,7 +2370,7 @@
         // "engine" controls whether model/parakeet_model are shown),
         // re-render so the correct fields appear/disappear.
         const isVisibilityTrigger = Object.values(_settingsCache.schema).some(
-          s => s.visible_when && Object.keys(s.visible_when)[0] === key
+          s => visibilityKeys(s.visible_when).includes(key)
         );
         if (isVisibilityTrigger) renderSettings(_settingsCache);
       }

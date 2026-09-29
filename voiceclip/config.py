@@ -33,7 +33,12 @@ class RecorderCmd(Enum):
 
 SAMPLE_RATE = 16000       # Whisper expects 16kHz
 MIN_FILE_BYTES = 1000     # WAV files smaller than this are treated as empty
-SILENCE_RMS_THRESHOLD = 0.003
+# Rejects dead-mic captures (device died / muted mid-session), which sit
+# well below 0.001 RMS. Real speech on a quiet or call-mode headset mic can
+# dip to ~0.002 and still transcribe perfectly — Whisper is far more
+# tolerant of low levels than this gate, so keep it a dead-mic detector,
+# not a quality filter.
+SILENCE_RMS_THRESHOLD = 0.0008
 MIN_AUDIO_DURATION = 0.3  # Seconds
 # Hard cap on a single recording. Protects against stuck-key / forgotten-toggle
 # scenarios that would otherwise grow the frame buffer linearly (~4 MB per
@@ -71,7 +76,7 @@ PARAKEET_MODELS = {
     "parakeet-rnnt-1.1b": "mlx-community/parakeet-rnnt-1.1b",
 }
 
-VALID_ENGINES = ("whisper", "whisper_cpp", "parakeet")
+VALID_ENGINES = ("whisper", "whisper_cpp", "parakeet", "cloud")
 
 
 def _whisper_cpp_available(model_id: str) -> bool:
@@ -115,6 +120,14 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
 _DEFAULT_CONFIG = {
     "model": "large-v3-turbo",
+    # Cloud engine (OpenAI-compatible /v1/audio/transcriptions server).
+    # Activate with "engine": "cloud" and a base_url. Prefer the
+    # VOICECLIP_CLOUD_API_KEY env var over storing the key here.
+    "cloud": {
+        "base_url": "",
+        "api_key": "",
+        "model": "whisper-large-v3"
+    },
     "english_only": True,
     "persona": "default",
     "hotkey": "alt_r",
@@ -163,9 +176,40 @@ _DEFAULT_CONFIG = {
 
 # These are the "live" values used by all modules.
 # Set by load() at startup, overridable by env vars.
-ENGINE = "whisper"  # "whisper" or "parakeet"
+ENGINE = "whisper"  # "whisper", "whisper_cpp", "parakeet", or "cloud"
 MODEL = "large-v3-turbo"
 PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
+
+# Cloud engine — OpenAI-compatible /v1/audio/transcriptions endpoint
+# (vLLM, speaches, LiteLLM, ...). Active when engine is set to "cloud".
+# The API key can live in config.json (chmod 600) or, preferably, in the
+# VOICECLIP_CLOUD_API_KEY env var so it never touches disk.
+CLOUD_BASE_URL = ""
+CLOUD_API_KEY = ""
+CLOUD_MODEL = "whisper-large-v3"
+# Optional CA bundle for servers with a private CA (e.g. local dev behind
+# Caddy's internal CA). Empty = system trust store.
+CLOUD_CA_BUNDLE = ""
+# Optional EC2 lifecycle control (`voiceclip cloud stop|start|status`).
+CLOUD_INSTANCE_ID = ""
+CLOUD_REGION = ""
+# Streaming dictation over the server's /v1/realtime WebSocket: audio is
+# transcribed WHILE the hotkey is held, so text is ready almost the moment
+# it's released. Falls back to the batch endpoint automatically on any
+# streaming failure. The realtime model is the backend model name (the
+# /v1/realtime path does not translate public model names).
+CLOUD_STREAMING = True
+# Local engine to fall back to when the cloud server is unreachable (tunnel
+# down, instance parked and still booting, expired credentials). Uses the
+# regular local model settings (`model` for whisper/whisper_cpp,
+# `parakeet_model` for parakeet). "none" = fail loudly instead.
+CLOUD_FALLBACK_ENGINE = "none"
+_VALID_FALLBACK_ENGINES = ("none", "whisper", "whisper_cpp", "parakeet")
+CLOUD_REALTIME_MODEL = "Systran/faster-whisper-large-v3"
+# Auto-start the SSM tunnel at launch when the gateway isn't already
+# reachable (requires cloud.instance_id + cloud.region and a localhost
+# base_url). Disable to manage the tunnel yourself.
+CLOUD_AUTO_TUNNEL = True
 ENGLISH_ONLY = True
 PERSONA = "default"
 HOTKEY = "alt_r"
@@ -177,6 +221,9 @@ HISTORY_MAX_DAYS = 30
 # Off unless REFLECTION_HOTKEY is set in config or env.
 REFLECTION_HOTKEY: str | None = None
 REFLECTION_HOTKEY_MODE = "hold"
+# Voice assistant: hold to ask, hear a spoken, journal-aware answer (cloud engine).
+ASSISTANT_HOTKEY = None
+ASSISTANT_HOTKEY_MODE = "hold"
 REFLECTION_MAX_DAYS = 0  # 0 = never auto-delete reflections
 
 # Polish — third hotkey that transcribes then runs the text through a local
@@ -191,29 +238,39 @@ POLISH_PROMPT = (
 )
 
 # Summaries — LLM-generated daily recaps. Off ("none") by default.
-# Provider: "none" | "local" | "openai" | "anthropic"
+# Provider: "none" | "local" | "openai" | "anthropic" | "cloud" (own gateway)
 SUMMARIES_PROVIDER = "none"
 SUMMARIES_LOCAL_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 SUMMARIES_OPENAI_MODEL = "gpt-4o-mini"
 SUMMARIES_ANTHROPIC_MODEL = "claude-haiku-4-5"
+SUMMARIES_CLOUD_MODEL = "assistant"
 SUMMARIES_STYLE = "descriptive"  # "descriptive" | "reflective"
 
 # Research — queue-based research assistant. Off by default.
-# Provider: "none" | "local" | "openai" | "anthropic"
+# Provider: "none" | "local" | "openai" | "anthropic" | "cloud" (own gateway)
 # Local research answers from model knowledge only — no web search, no
 # sources. Cloud providers can use their server-side web search tool.
 RESEARCH_PROVIDER = "none"
 RESEARCH_LOCAL_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 RESEARCH_OPENAI_MODEL = "gpt-4o-mini"
 RESEARCH_ANTHROPIC_MODEL = "claude-haiku-4-5"
+RESEARCH_CLOUD_MODEL = "assistant"
 
 # Patterns — longitudinal coach looking across your recent history.
-# Provider: "none" | "local" | "openai" | "anthropic"
+# Provider: "none" | "local" | "openai" | "anthropic" | "cloud" (own gateway)
 PATTERNS_PROVIDER = "none"
 PATTERNS_LOCAL_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 PATTERNS_OPENAI_MODEL = "gpt-4o-mini"
 PATTERNS_ANTHROPIC_MODEL = "claude-haiku-4-5"
+PATTERNS_CLOUD_MODEL = "assistant"
 PATTERNS_WINDOW_DAYS = 7
+# One shared AI model for every text feature (summaries, research,
+# patterns, polish, Ask). When set via the "ai" block it overrides the
+# per-feature provider blocks above — one place to change the model.
+# provider: "" (unset → per-feature blocks apply) | "none" | "local" |
+# "openai" | "anthropic" | "cloud".
+AI_PROVIDER = ""
+AI_MODEL = ""
 
 # Populated by load() — the merged dictionary (global + persona)
 DICTIONARY: dict[str, str] = {}
@@ -248,23 +305,30 @@ def _ensure_config_file():
         log.warning("Could not create config file: %s", e)
 
 
-_VALID_PROVIDERS = ("none", "local", "openai", "anthropic")
+_VALID_PROVIDERS = ("none", "local", "openai", "anthropic", "cloud")
 _DEFAULT_LOCAL_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 _DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 _DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5"
+# "cloud" model ids are GATEWAY ROUTE NAMES on the user's own stack
+# (litellm/config.yaml), not vendor model strings. "assistant" routes to
+# the vLLM Qwen3.5 the voice assistant already uses.
+_DEFAULT_CLOUD_LLM_MODEL = "assistant"
 
 
 def _load_provider_block(
     cfg: dict, block_name: str, env_prefix: str,
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str]:
     """Load a feature's provider + three model-id fields from config + env.
 
     Each of summaries / research / patterns has the same shape:
       - A nested dict in config.json (e.g. cfg["summaries"])
       - A provider field validated against _VALID_PROVIDERS
-      - Three model-id fields (local, openai, anthropic) with env overrides
+      - Four model-id fields (local, openai, anthropic, cloud) with env
+        overrides. The cloud model is a route name on the user's own
+        gateway (default "assistant").
 
-    Returns (provider, local_model, openai_model, anthropic_model).
+    Returns (provider, local_model, openai_model, anthropic_model,
+    cloud_model).
     """
     block = cfg.get(block_name, {})
     if not isinstance(block, dict):
@@ -290,7 +354,20 @@ def _load_provider_block(
         f"VOICECLIP_{env_prefix}_ANTHROPIC_MODEL",
         block.get("anthropic_model", _DEFAULT_ANTHROPIC_MODEL),
     )
-    return provider, local_model, openai_model, anthropic_model
+    cloud_model = os.environ.get(
+        f"VOICECLIP_{env_prefix}_CLOUD_MODEL",
+        block.get("cloud_model", _DEFAULT_CLOUD_LLM_MODEL),
+    )
+    return provider, local_model, openai_model, anthropic_model, cloud_model
+
+
+def _apply_shared_ai(provider: str, model: str):
+    """Point every AI feature at the shared (provider, model)."""
+    g = globals()
+    for feat in ("SUMMARIES", "RESEARCH", "PATTERNS"):
+        g[f"{feat}_PROVIDER"] = provider
+        if provider != "none" and model:
+            g[f"{feat}_{provider.upper()}_MODEL"] = model
 
 
 def load():
@@ -299,16 +376,23 @@ def load():
     Call this once at startup. Sets all module-level config variables.
     """
     global ENGINE, MODEL, PARAKEET_MODEL, ENGLISH_ONLY, PERSONA, DICTIONARY, INITIAL_PROMPT
+    global CLOUD_BASE_URL, CLOUD_API_KEY, CLOUD_MODEL, CLOUD_CA_BUNDLE
+    global CLOUD_INSTANCE_ID, CLOUD_REGION, CLOUD_STREAMING, CLOUD_REALTIME_MODEL
+    global CLOUD_FALLBACK_ENGINE
+    global CLOUD_AUTO_TUNNEL, ASSISTANT_HOTKEY, ASSISTANT_HOTKEY_MODE
     global CUSTOM_VOCABULARY
     global HOTKEY, HOTKEY_MODE, HISTORY_ENABLED, HISTORY_MAX_DAYS, _raw
     global REFLECTION_HOTKEY, REFLECTION_HOTKEY_MODE, REFLECTION_MAX_DAYS
     global POLISH_HOTKEY, POLISH_HOTKEY_MODE, POLISH_PROMPT
     global SUMMARIES_PROVIDER, SUMMARIES_LOCAL_MODEL
-    global SUMMARIES_OPENAI_MODEL, SUMMARIES_ANTHROPIC_MODEL, SUMMARIES_STYLE
+    global SUMMARIES_OPENAI_MODEL, SUMMARIES_ANTHROPIC_MODEL
+    global SUMMARIES_CLOUD_MODEL, SUMMARIES_STYLE
     global RESEARCH_PROVIDER, RESEARCH_LOCAL_MODEL
     global RESEARCH_OPENAI_MODEL, RESEARCH_ANTHROPIC_MODEL
+    global RESEARCH_CLOUD_MODEL
     global PATTERNS_PROVIDER, PATTERNS_LOCAL_MODEL, PATTERNS_OPENAI_MODEL
-    global PATTERNS_ANTHROPIC_MODEL, PATTERNS_WINDOW_DAYS
+    global PATTERNS_ANTHROPIC_MODEL, PATTERNS_CLOUD_MODEL, PATTERNS_WINDOW_DAYS
+    global AI_PROVIDER, AI_MODEL
 
     _ensure_config_file()
 
@@ -350,6 +434,49 @@ def load():
         "VOICECLIP_PARAKEET_MODEL",
         cfg.get("parakeet_model", "mlx-community/parakeet-tdt-0.6b-v3"),
     )
+
+    # Cloud engine settings — nested "cloud" block, env vars win.
+    cloud_cfg = cfg.get("cloud", {})
+    if not isinstance(cloud_cfg, dict):
+        cloud_cfg = {}
+    CLOUD_BASE_URL = os.environ.get(
+        "VOICECLIP_CLOUD_BASE_URL", cloud_cfg.get("base_url", ""),
+    )
+    CLOUD_API_KEY = os.environ.get(
+        "VOICECLIP_CLOUD_API_KEY", cloud_cfg.get("api_key", ""),
+    )
+    CLOUD_MODEL = os.environ.get(
+        "VOICECLIP_CLOUD_MODEL", cloud_cfg.get("model", "whisper-large-v3"),
+    )
+    CLOUD_CA_BUNDLE = os.environ.get(
+        "VOICECLIP_CLOUD_CA_BUNDLE", cloud_cfg.get("ca_bundle", ""),
+    )
+    CLOUD_INSTANCE_ID = os.environ.get(
+        "VOICECLIP_CLOUD_INSTANCE_ID", cloud_cfg.get("instance_id", ""),
+    )
+    CLOUD_REGION = os.environ.get(
+        "VOICECLIP_CLOUD_REGION", cloud_cfg.get("region", ""),
+    )
+    CLOUD_STREAMING = os.environ.get(
+        "VOICECLIP_CLOUD_STREAMING",
+        str(cloud_cfg.get("streaming", True)),
+    ).lower() == "true"
+    CLOUD_FALLBACK_ENGINE = os.environ.get(
+        "VOICECLIP_CLOUD_FALLBACK_ENGINE",
+        str(cloud_cfg.get("fallback_engine", "none")),
+    ).strip().lower()
+    if CLOUD_FALLBACK_ENGINE not in _VALID_FALLBACK_ENGINES:
+        log.warning("Invalid cloud.fallback_engine '%s', using 'none'",
+                    CLOUD_FALLBACK_ENGINE)
+        CLOUD_FALLBACK_ENGINE = "none"
+    CLOUD_REALTIME_MODEL = os.environ.get(
+        "VOICECLIP_CLOUD_REALTIME_MODEL",
+        cloud_cfg.get("realtime_model", "Systran/faster-whisper-large-v3"),
+    )
+    CLOUD_AUTO_TUNNEL = os.environ.get(
+        "VOICECLIP_CLOUD_AUTO_TUNNEL",
+        str(cloud_cfg.get("auto_tunnel", True)),
+    ).lower() == "true"
 
     ENGLISH_ONLY = os.environ.get(
         "VOICECLIP_ENGLISH_ONLY",
@@ -395,6 +522,19 @@ def load():
         REFLECTION_MAX_DAYS = 0
 
     # Polish hotkey — optional third hotkey for LLM-cleaned dictation
+    ASSISTANT_HOTKEY = os.environ.get(
+        "VOICECLIP_ASSISTANT_HOTKEY",
+        cfg.get("assistant_hotkey") or None,
+    )
+    if ASSISTANT_HOTKEY is not None and not str(ASSISTANT_HOTKEY).strip():
+        ASSISTANT_HOTKEY = None
+    ASSISTANT_HOTKEY_MODE = os.environ.get(
+        "VOICECLIP_ASSISTANT_HOTKEY_MODE",
+        cfg.get("assistant_hotkey_mode", "hold"),
+    )
+    if ASSISTANT_HOTKEY_MODE not in ("hold", "toggle"):
+        ASSISTANT_HOTKEY_MODE = "hold"
+
     POLISH_HOTKEY = os.environ.get(
         "VOICECLIP_POLISH_HOTKEY",
         cfg.get("polish_hotkey") or None,
@@ -417,7 +557,7 @@ def load():
     # provider + model loading shape. Collapsed into a helper to avoid
     # 120 lines of three-way duplication.
     SUMMARIES_PROVIDER, SUMMARIES_LOCAL_MODEL, SUMMARIES_OPENAI_MODEL, \
-        SUMMARIES_ANTHROPIC_MODEL = _load_provider_block(
+        SUMMARIES_ANTHROPIC_MODEL, SUMMARIES_CLOUD_MODEL = _load_provider_block(
             cfg, "summaries", "SUMMARIES")
     SUMMARIES_STYLE = cfg.get("summaries", {}).get("style", "descriptive") \
         if isinstance(cfg.get("summaries"), dict) else "descriptive"
@@ -426,11 +566,11 @@ def load():
         SUMMARIES_STYLE = "descriptive"
 
     RESEARCH_PROVIDER, RESEARCH_LOCAL_MODEL, RESEARCH_OPENAI_MODEL, \
-        RESEARCH_ANTHROPIC_MODEL = _load_provider_block(
+        RESEARCH_ANTHROPIC_MODEL, RESEARCH_CLOUD_MODEL = _load_provider_block(
             cfg, "research", "RESEARCH")
 
     PATTERNS_PROVIDER, PATTERNS_LOCAL_MODEL, PATTERNS_OPENAI_MODEL, \
-        PATTERNS_ANTHROPIC_MODEL = _load_provider_block(
+        PATTERNS_ANTHROPIC_MODEL, PATTERNS_CLOUD_MODEL = _load_provider_block(
             cfg, "patterns", "PATTERNS")
     patterns_cfg = cfg.get("patterns", {})
     if not isinstance(patterns_cfg, dict):
@@ -441,6 +581,18 @@ def load():
         PATTERNS_WINDOW_DAYS = 7
     if PATTERNS_WINDOW_DAYS < 1:
         PATTERNS_WINDOW_DAYS = 7
+    ai_cfg = cfg.get("ai", {})
+    if not isinstance(ai_cfg, dict):
+        ai_cfg = {}
+    AI_PROVIDER = str(os.environ.get(
+        "VOICECLIP_AI_PROVIDER", ai_cfg.get("provider", "")) or "").strip().lower()
+    AI_MODEL = str(os.environ.get(
+        "VOICECLIP_AI_MODEL", ai_cfg.get("model", "")) or "").strip()
+    if AI_PROVIDER and AI_PROVIDER not in _VALID_PROVIDERS:
+        log.warning("Invalid ai.provider '%s', ignoring", AI_PROVIDER)
+        AI_PROVIDER = ""
+    if AI_PROVIDER:
+        _apply_shared_ai(AI_PROVIDER, AI_MODEL)
 
     # Resolve persona
     personas = cfg.get("personas", {})
@@ -522,6 +674,11 @@ def validate():
             print(f"Unknown Parakeet model: {PARAKEET_MODEL}")
             print(f"Valid options: {', '.join(valid_names)}")
             sys.exit(1)
+    if ENGINE == "cloud" and not CLOUD_BASE_URL.strip():
+        print("Engine 'cloud' requires a server URL.")
+        print('Set it in ~/.voiceclip/config.json:  "cloud": {"base_url": "https://..."}')
+        print("or via the VOICECLIP_CLOUD_BASE_URL environment variable.")
+        sys.exit(1)
 
 
 def get_model_repo():
@@ -670,20 +827,25 @@ def model_id_for(feature: str) -> str | None:
     """
     _FEATURE_MAP = {
         "summaries": (SUMMARIES_PROVIDER, SUMMARIES_LOCAL_MODEL,
-                      SUMMARIES_OPENAI_MODEL, SUMMARIES_ANTHROPIC_MODEL),
+                      SUMMARIES_OPENAI_MODEL, SUMMARIES_ANTHROPIC_MODEL,
+                      SUMMARIES_CLOUD_MODEL),
         "research": (RESEARCH_PROVIDER, RESEARCH_LOCAL_MODEL,
-                     RESEARCH_OPENAI_MODEL, RESEARCH_ANTHROPIC_MODEL),
+                     RESEARCH_OPENAI_MODEL, RESEARCH_ANTHROPIC_MODEL,
+                     RESEARCH_CLOUD_MODEL),
         "patterns": (PATTERNS_PROVIDER, PATTERNS_LOCAL_MODEL,
-                     PATTERNS_OPENAI_MODEL, PATTERNS_ANTHROPIC_MODEL),
+                     PATTERNS_OPENAI_MODEL, PATTERNS_ANTHROPIC_MODEL,
+                     PATTERNS_CLOUD_MODEL),
     }
     entry = _FEATURE_MAP.get(feature)
     if entry is None:
         return None
-    provider, local, openai, anthropic = entry
+    provider, local, openai, anthropic, cloud = entry
     if provider == "local":
         return local
     if provider == "openai":
         return openai
     if provider == "anthropic":
         return anthropic
+    if provider == "cloud":
+        return cloud
     return None

@@ -5,11 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VoiceClip journal</title>
 <link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/theme-playful.css">
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1>🎙️ VoiceClip journal</h1>
+    <h1><span class="logo-mic" aria-hidden="true">🎙️</span> <span class="brand">VoiceClip</span> journal</h1>
     <div class="daynav" id="journal_nav">
       <button id="prev">← Prev</button>
       <button id="today">Today</button>
@@ -28,6 +29,8 @@
     <button class="tab active" data-view="journal">📓 Journal</button>
     <button class="tab" data-view="queue">📚 Queue</button>
     <button class="tab" data-view="patterns">📊 Patterns</button>
+    <button class="tab" data-view="agent">🗣️ Agent</button>
+    <button class="tab" data-view="vocab">🔤 Vocabulary</button>
     <button class="tab" data-view="settings">⚙️ Settings</button>
   </div>
 
@@ -89,6 +92,39 @@
     <section id="patterns_slot"></section>
   </div>
 
+  <div id="agent_view" style="display:none">
+    <div class="agent-stage">
+      <button id="agent_orb" class="agent-orb idle" type="button" aria-label="Start the voice agent">
+        <span class="orb-ring" aria-hidden="true"></span>
+        <span class="orb-core" aria-hidden="true">🗣️</span>
+        <span class="orb-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+      </button>
+      <div class="agent-meter" id="agent_meter" hidden aria-hidden="true"><span></span></div>
+      <div class="agent-state" id="agent_state" aria-live="polite">Tap to start talking</div>
+      <div class="agent-hint">Just talk, and interrupt any time. It can search the web, check your journal, take notes, and park the server.</div>
+    </div>
+    <div class="agent-log" id="agent_log" aria-live="polite"></div>
+  </div>
+  <div id="vocab_view" style="display:none">
+    <div class="dayline">
+      <h2>Vocabulary</h2>
+      <div class="stats" id="vocab_stats"></div>
+    </div>
+    <p class="vocab-intro">Names, jargon and acronyms dictation should always spell right. Changes apply after restarting VoiceClip.</p>
+    <div class="vocab-add">
+      <input id="vocab_input" type="text" placeholder="Add a word or phrase" autocomplete="off" maxlength="80">
+      <button id="vocab_add" type="button">Add</button>
+    </div>
+    <div class="vocab-list-head" id="vocab_list_head" hidden>
+      <input id="vocab_filter" type="search" placeholder="Filter your words" autocomplete="off" aria-label="Filter your words">
+    </div>
+    <div class="vocab-groups" id="vocab_chips"></div>
+    <div class="vocab-suggest-head">
+      <h3>Suggested from your dictation</h3>
+      <span class="vocab-scanned" id="vocab_scanned"></span>
+    </div>
+    <div class="vocab-suggestions" id="vocab_suggestions"></div>
+  </div>
   <div id="settings_view" style="display:none">
     <div class="dayline">
       <h2>Settings</h2>

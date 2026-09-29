@@ -202,6 +202,13 @@ def _run(provider: str, system: str, user: str, model_id: str) -> str:
         return llm_provider.complete_anthropic(
             system=system, user=user, model_id=model_id, max_tokens=900,
         )
+    if provider == "cloud":
+        # json_mode -> vLLM guided JSON via the OpenAI-compatible
+        # response_format param; _parse_json_safely remains the fallback.
+        return llm_provider.complete_cloud(
+            system=system, user=user, model_id=model_id,
+            max_tokens=900, json_mode=True,
+        )
     raise RuntimeError(f"unknown patterns provider: {provider}")
 
 

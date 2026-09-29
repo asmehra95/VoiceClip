@@ -135,6 +135,11 @@ def _post_ask(req, payload):
                 system=system, user=user_message,
                 model_id=model_id, max_tokens=800,
             )
+        elif provider == "cloud":
+            answer = llm_provider.complete_cloud(
+                system=system, user=user_message,
+                model_id=model_id, max_tokens=800,
+            )
         else:
             answer = ""
     except RuntimeError as e:
