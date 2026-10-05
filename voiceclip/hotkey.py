@@ -522,8 +522,11 @@ class HotkeyHandler:
             # Run through LLM for cleanup before pasting.
             from voiceclip import polisher as _pol
             polished = _pol.polish(text)
-            polish_fixes = _pol.word_changes(text, polished) or None
-            polish_pass = "polished" if _pol.last_status == "ok" else None
+            # Mishearing fixes are counted as fixes; the rest of the rewrite
+            # isn't (stats keeps the two apart via ai_pass).
+            mishear_fixes = list(_pol.last_fixes)
+            polish_fixes = mishear_fixes or None
+            polish_pass = ("checked" if mishear_fixes else "polished") if _pol.last_status == "ok" else None
             if HISTORY_ENABLED:
                 from voiceclip.history import save as save_history
                 save_history(

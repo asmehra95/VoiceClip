@@ -131,6 +131,9 @@ def _context_block(text: str, recent: list[str] | None = None) -> str:
     vocab = _vocabulary()
     if vocab:
         lines.append("Known terms (spelled correctly): " + ", ".join(vocab))
+    frequent = [t for t in _frequent_terms() if t.lower() not in {v.lower() for v in vocab}]
+    if frequent:
+        lines.append("Names and acronyms the user says often: " + ", ".join(frequent))
     low = text.lower()
     learned = [(w, r) for w, r in _learned_corrections().items() if w.lower() in low]
     if learned:
@@ -160,12 +163,45 @@ def _recent_dictations(now=None) -> list[str]:
         return []
 
 
+_FREQUENT_DAYS = 30
+_FREQUENT_MAX = 40
+_frequent_cache: tuple[float, list[str]] | None = None
+
+
+def _frequent_terms() -> list[str]:
+    """Names/acronyms the user said at least twice in the last 30 days —
+    people and jargon they talk about often but never added to the
+    vocabulary. Cached for 10 minutes (the scan reads ~a month of journal)."""
+    global _frequent_cache
+    import time as _time
+    from datetime import datetime, timedelta
+    if _frequent_cache and _time.time() - _frequent_cache[0] < 600:
+        return _frequent_cache[1]
+    terms: list[str] = []
+    try:
+        from voiceclip import history, vocab_suggest
+        if history._conn is None:
+            history.init()
+        since = (datetime.now() - timedelta(days=_FREQUENT_DAYS)).isoformat(timespec="seconds")
+        rows = history._conn.execute(
+            "SELECT COALESCE(formatted_text, raw_text) FROM transcriptions "
+            "WHERE kind IN ('transcription', 'reflection') AND archived_at IS NULL "
+            "AND timestamp >= ? ORDER BY id DESC LIMIT 3000", (since,)).fetchall()
+        terms = [x["term"] for x in vocab_suggest.suggest(
+            [r[0] for r in rows], existing=_vocabulary(), min_count=2, limit=_FREQUENT_MAX)
+            if x["kind"] in ("name", "acronym")]
+    except Exception as e:
+        log.debug("frequent terms unavailable: %s", e)
+    _frequent_cache = (_time.time(), terms)
+    return terms
+
+
 def _allowed_terms(recent: list[str]) -> list[str]:
     """Terms a correction may introduce: vocabulary plus names/acronyms the
     user said in the last few minutes. (Learned corrections only apply to
     the exact phrase the user fixed — see constrain().)"""
     from voiceclip import vocab_suggest
-    terms = list(_vocabulary())
+    terms = list(_vocabulary()) + _frequent_terms()
     if recent:
         terms += [x["term"] for x in vocab_suggest.suggest(recent, min_count=1, limit=60)]
     seen, out = set(), []
@@ -215,6 +251,22 @@ def _sound_key(s: str) -> str:
     return re.sub(r"(.)\1+", r"\1", s)
 
 
+_CONFUSABLE_LETTERS = ({"M", "N"}, {"B", "D", "P", "T", "V"})
+
+
+def _acronym_one_off(heard: str, term: str) -> bool:
+    """'LNP' vs 'LMP': same-length all-caps acronyms (3-5 letters) that differ
+    in exactly one letter, where the two letters are ones speech recognition
+    confuses (M/N, B/D/P/T/V). 'DPS' -> 'DFS' doesn't qualify: P/F aren't a
+    confusable pair, and DPS is a real acronym the user says."""
+    h, t = heard.strip(_EDGE_PUNCT), term
+    if not (3 <= len(t) <= 5 and len(h) == len(t) and h.isupper() and t.isupper()
+            and h.isalpha() and t.isalpha()):
+        return False
+    diff = [(a, b) for a, b in zip(h, t, strict=True) if a != b]
+    return len(diff) == 1 and any({diff[0][0], diff[0][1]} <= g for g in _CONFUSABLE_LETTERS)
+
+
 def _all_real_words(phrase: str) -> bool:
     from voiceclip import vocab_suggest
     d = vocab_suggest._dictionary()
@@ -257,7 +309,12 @@ def constrain(original: str, candidate: str, allowed=(), learned=None) -> str:
         if _squash(old) == _squash(new):          # "e invoicing" -> "e-invoicing"
             return True
         if old and learned.get(" ".join(old)) == " ".join(new):
-            return True
+            # A one-off manual edit ("that" -> "Annual plan") must not fire on
+            # every ordinary "that": learned swaps need to sound alike too.
+            heard = " ".join(old)
+            need = _SOUND_MIN_REAL if _all_real_words(heard) else _SOUND_MIN
+            if sounds_alike(heard, " ".join(new)) >= need:
+                return True
         if not old:
             return False                           # never accept pure additions
         # Look a couple of words either side: "Blue harbour" -> "Blue Harbor"
@@ -278,6 +335,10 @@ def constrain(original: str, candidate: str, allowed=(), learned=None) -> str:
                     if not (lo + y > i1 and lo + x < i2):
                         continue
                     heard = " ".join(window[x:y])
+                    raw_heard = " ".join(a[lo + x:lo + y])
+                    raw_term = next((r for r in allowed if _norm(r) == t), t)
+                    if _acronym_one_off(raw_heard, raw_term):
+                        return True
                     need = _SOUND_MIN_REAL if _all_real_words(heard) else _SOUND_MIN
                     if sounds_alike(heard, t) >= need:
                         return True
@@ -351,8 +412,10 @@ def _clean_output(out: str) -> str:
 
 
 def similarity(a: str, b: str) -> float:
-    """Word-level similarity, 0..1 (case-insensitive)."""
-    wa, wb = [w.lower() for w in _words(a)], [w.lower() for w in _words(b)]
+    """Word-level similarity, 0..1 (case- and punctuation-insensitive:
+    "today." and "today" are the same word)."""
+    wa = [w for w in (_norm(t) for t in _words(a)) if w]
+    wb = [w for w in (_norm(t) for t in _words(b)) if w]
     if not wa and not wb:
         return 1.0
     return difflib.SequenceMatcher(a=wa, b=wb, autojunk=False).ratio()
@@ -411,10 +474,22 @@ def correct(raw_text: str, recent: list[str] | None = None) -> str:
                 post=lambda out: constrain(raw_text, out, allowed, learned))
 
 
+last_fixes: list[list[str]] = []
+
+
 def polish(raw_text: str) -> str:
-    """Rewrite into clean prose (Polish hotkey), vocabulary-aware."""
+    """Rewrite into clean prose (Polish hotkey), vocabulary-aware.
+
+    Runs the strict mishearing check first (recorded in `last_fixes`), so
+    names and jargon get fixed even when the user only ever uses Polish;
+    the rewrite then works from the corrected text."""
+    global last_fixes
+    last_fixes = []
     if not raw_text or not raw_text.strip():
         return raw_text
+    corrected = correct(raw_text) if getattr(config, "AUTOCORRECT", False) else raw_text
+    last_fixes = word_changes(raw_text, corrected)
+    raw_text = corrected
     if _provider() is None:
         log.warning("Polish hotkey fired but no AI model is set (Settings → AI). "
                     "Pasting raw text instead.")

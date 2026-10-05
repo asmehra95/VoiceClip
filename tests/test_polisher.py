@@ -27,6 +27,7 @@ def fake_llm(monkeypatch):
     monkeypatch.setattr(config, "CUSTOM_VOCABULARY", ["Blue Harbor", "SLA", "self-billing"])
     monkeypatch.setattr(config, "DICTIONARY", {})
     monkeypatch.setattr(polisher, "_learned_corrections", lambda: {"Q free": "Q3"})
+    monkeypatch.setattr(polisher, "_frequent_terms", lambda: ["Northwind", "LMP"])
     return calls, state
 
 
@@ -34,7 +35,9 @@ def test_fixes_mishearing_and_sends_context(fake_llm):
     calls, state = fake_llm
     state["reply"] = "Blue Harbor plans to send five invoices for Q3."
     out = polisher.correct("Blue harbour plans to send five invoices for Q free.")
-    assert out == "Blue Harbor plans to send five invoices for Q3."
+    # Vocabulary fix applied; the learned "Q free" -> "Q3" swap is shown to
+    # the model but refused, because the two don't sound alike.
+    assert out == "Blue Harbor plans to send five invoices for Q free."
     system, user = calls[0]["system"], calls[0]["user"]
     assert "Blue Harbor, SLA, self-billing" in system
     assert '"Q free" should be "Q3"' in system           # only learned pairs that occur
@@ -177,3 +180,42 @@ def test_last_status(fake_llm, monkeypatch):
     monkeypatch.setattr(config, "SUMMARIES_PROVIDER", "none")
     polisher.correct("hello there", recent=[])
     assert polisher.last_status == "off"
+
+
+
+def test_frequent_terms_are_context_and_allowed(fake_llm):
+    calls, state = fake_llm
+    state["reply"] = "Northwind ships the LMP files today."
+    out = polisher.correct("Northwin ships the LNP files today.", recent=[])
+    assert out == "Northwind ships the LMP files today."
+    assert "Names and acronyms the user says often: Northwind, LMP" in calls[0]["system"]
+
+
+@pytest.mark.parametrize("heard,term,ok", [
+    ("LNP", "LMP", True), ("BDS", "BTS", True), ("EDI", "EDI", False),   # identical isn't a fix
+    ("DPS", "DFS", False), ("TFS", "TPS", False),                        # F isn't confusable
+    ("LNPS", "LMP", False), ("lnp", "LMP", False), ("AB", "AC", False), ("LNX", "LMP", False),
+])
+def test_acronym_one_off(heard, term, ok):
+    assert polisher._acronym_one_off(heard, term) is ok
+
+
+def test_polish_fixes_mishearings_first(fake_llm, monkeypatch):
+    calls, state = fake_llm
+    monkeypatch.setattr(config, "AUTOCORRECT", True)
+    replies = iter(["Escalate to Northwind today.",            # correct() pass
+                    "Please escalate this to Northwind today."])  # polish rewrite
+    state["reply"] = lambda user: next(replies)
+    out = polisher.polish("escalate to Northwin today")
+    assert out == "Please escalate this to Northwind today."
+    assert polisher.last_fixes == [["Northwin", "Northwind"]]
+    assert "Northwind today" in calls[1]["user"]               # rewrite saw the fixed text
+
+
+
+def test_learned_swap_must_sound_alike():
+    learned = {"that": "Annual plan", "Cloud": "Claude"}
+    assert polisher.constrain("Just so that I understand.", "Just so Annual plan I understand.",
+                              learned=learned) == "Just so that I understand."
+    assert polisher.constrain("Using Cloud Opus.", "Using Claude Opus.", learned=learned) == \
+        "Using Claude Opus."
