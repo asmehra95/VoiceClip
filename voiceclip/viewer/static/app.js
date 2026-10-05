@@ -176,6 +176,7 @@
     $id("settings_view").style.display = view === "settings" ? "" : "none";
     $id("agent_view").style.display = view === "agent" ? "" : "none";
     $id("vocab_view").style.display = view === "vocab" ? "" : "none";
+    $id("stats_view").style.display = view === "stats" ? "" : "none";
     $id("journal_nav").style.visibility = view === "journal" ? "" : "hidden";
     // Clear stale search on tab-switch
     if (view !== "journal") {
@@ -190,6 +191,7 @@
     else if (view === "settings") loadSettings();
     else if (view === "agent") agentActivate();
     else if (view === "vocab") loadVocab();
+    else if (view === "stats") loadStats();
     else load(state.date);
   }
 
@@ -1476,6 +1478,7 @@
     "window_title_capture":    ["Remember the app", "Note which window you dictated into"],
     "polish_prompt":           ["Polish instructions", null],
     "ai.model":                ["AI model", "One model for summaries, research, patterns, polish and Ask"],
+    "autocorrect":             ["Fix mishearings", "AI corrects names and jargon in every dictation (~1s, uses your vocabulary)"],
     "summaries.provider":      ["Provider", "Who writes your daily recap"],
     "summaries.style":         ["Style", null],
     "research.provider":       ["Provider", "Only OpenAI and Anthropic can search the web"],
@@ -1524,6 +1527,114 @@
   };
 
   let _settingsCache = null;
+
+  // ---------- Stats ----------
+  function fmtNum(n) { return Math.round(n).toLocaleString(); }
+  function fmtDuration(min) {
+    if (min < 1) return "< 1 min";
+    if (min < 60) return `${Math.round(min)} min`;
+    const h = Math.floor(min / 60), m = Math.round(min % 60);
+    return m ? `${h} h ${m} min` : `${h} h`;
+  }
+  function countUp(node, target, format) {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce || target <= 0) { node.textContent = format(target); return; }
+    const t0 = performance.now(), dur = 900;
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / dur);
+      node.textContent = format(target * (1 - Math.pow(1 - k, 3)));
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+  async function loadStats() {
+    const slot = $id("stats_slot");
+    let d;
+    try { d = await (await fetch("/api/stats")).json(); }
+    catch (e) { slot.textContent = "Couldn't load stats."; return; }
+    if (d.error) { slot.textContent = d.error; return; }
+    slot.innerHTML = "";
+    $id("stats_streak").textContent = d.current_streak
+      ? `🔥 ${d.current_streak}-day streak` : "Dictate today to start a streak";
+
+    const hero = (emoji, value, label, sub, fmt) => {
+      const v = el("div", {class: "stat-value"}, "0");
+      countUp(v, value, fmt);
+      return el("div", {class: "stat-hero"}, [
+        el("div", {class: "stat-emoji", "aria-hidden": "true"}, emoji), v,
+        el("div", {class: "stat-label"}, label),
+        sub ? el("div", {class: "stat-sub"}, sub) : null,
+      ]);
+    };
+    slot.appendChild(el("div", {class: "stat-heroes"}, [
+      hero("✍️", d.words, "words dictated", `${fmtNum(d.words_today)} today · ${fmtNum(d.words_week)} this week`, fmtNum),
+      hero("⏱️", d.minutes_saved, "of typing saved", `${fmtDuration(d.minutes_saved_week)} this week`, fmtDuration),
+      hero("🪄", d.ai_fixes, "words fixed by AI",
+           !d.autocorrect_on && !d.ai_checked ? "Turn on “Fix mishearings” in Settings → AI"
+             : [`${fmtNum(d.ai_checked)} dictation${d.ai_checked === 1 ? "" : "s"} checked`,
+                d.ai_polished ? `${fmtNum(d.ai_polished)} polished` : null].filter(Boolean).join(" · "),
+           fmtNum),
+    ]));
+
+    // Last 14 days
+    const max = Math.max(1, ...d.daily.map(x => x.words));
+    const bars = el("div", {class: "stat-bars", role: "img",
+                            "aria-label": `Words per day for the last 14 days, up to ${fmtNum(max)}`});
+    d.daily.forEach((x, i) => {
+      const dt = new Date(x.date + "T12:00:00");
+      bars.appendChild(el("div", {class: "stat-bar-col", title: `${dt.toLocaleDateString(undefined, {weekday: "short", month: "short", day: "numeric"})}: ${fmtNum(x.words)} words`}, [
+        el("div", {class: "stat-bar" + (x.words ? "" : " zero"),
+                   style: `--h:${(x.words / max) * 100}%; animation-delay:${i * 30}ms`}),
+        el("div", {class: "stat-bar-day"}, dt.toLocaleDateString(undefined, {weekday: "narrow"})),
+      ]));
+    });
+    const facts = [
+      ["Dictations", fmtNum(d.dictations)],
+      ["Days active", fmtNum(d.days_active)],
+      ["Best streak", `${d.best_streak} day${d.best_streak === 1 ? "" : "s"}`],
+      ["Best day", d.best_day ? `${fmtNum(d.best_day.words)} words` : "—"],
+      ["Vocabulary", `${d.vocab} words`],
+      ["Questions asked", fmtNum(d.questions)],
+    ];
+    slot.appendChild(el("div", {class: "stat-row"}, [
+      el("div", {class: "stat-card stat-chart"}, [el("h3", null, "Last 14 days"), bars]),
+      el("div", {class: "stat-card"}, [el("h3", null, "At a glance"),
+        el("dl", {class: "stat-facts"}, facts.flatMap(([k, v]) => [el("dt", null, k), el("dd", null, v)]))]),
+    ]));
+
+    const lower = [];
+    if (d.top_apps.length) {
+      const top = d.top_apps[0].words || 1;
+      lower.push(el("div", {class: "stat-card"}, [el("h3", null, "Where your words went"),
+        ...d.top_apps.map(a => el("div", {class: "stat-app"}, [
+          el("span", {class: "stat-app-name"}, a.name),
+          el("span", {class: "stat-app-bar"}, el("span", {style: `width:${(a.words / top) * 100}%`})),
+          el("span", {class: "stat-app-n"}, fmtNum(a.words)),
+        ]))]));
+    }
+    if (d.ai_recent.length) {
+      lower.push(el("div", {class: "stat-card"}, [el("h3", null, "Recent AI fixes"),
+        ...d.ai_recent.map(([a, b]) => el("div", {class: "stat-fix"}, [
+          el("s", null, a), el("span", {"aria-hidden": "true"}, " → "), el("strong", null, b)]))]));
+    }
+    if (lower.length) slot.appendChild(el("div", {class: "stat-row"}, lower));
+
+    const earned = d.badges.filter(b => b.earned).length;
+    slot.appendChild(el("div", {class: "stat-card"}, [
+      el("h3", null, ["Achievements", el("span", {class: "vocab-group-count"}, `${earned} / ${d.badges.length}`)]),
+      el("div", {class: "badge-grid"}, d.badges.map(b => el("div", {
+        class: "badge" + (b.earned ? " earned" : ""),
+        title: b.earned ? `${b.title} — ${b.description}` : `${b.description} (${Math.round(b.progress * 100)}%)`,
+      }, [
+        el("div", {class: "badge-emoji", "aria-hidden": "true"}, b.emoji),
+        el("div", {class: "badge-title"}, b.title),
+        el("div", {class: "badge-desc"}, b.description),
+        b.earned ? null : el("div", {class: "badge-progress"}, el("span", {style: `width:${b.progress * 100}%`})),
+      ]))),
+    ]));
+    slot.appendChild(el("p", {class: "stat-note"},
+      `Time saved compares typing at ${d.assumptions.typing_wpm} words per minute with speaking at ${d.assumptions.speaking_wpm}.`));
+  }
 
   // ---------- Vocabulary ----------
   const VOCAB_KIND = {acronym: "acronym", name: "name", phrase: "phrase"};

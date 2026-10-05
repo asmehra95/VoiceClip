@@ -7,6 +7,7 @@ save "reflection" entries into the same table (discriminated by `kind`).
 DB location: ~/.voiceclip/history.db (chmod 600)
 """
 
+import json
 import logging
 import os
 import sqlite3
@@ -130,6 +131,11 @@ def _migrate(conn: sqlite3.Connection):
     _add_column(conn, "archived_at", "TEXT")
     # Engine used for transcription (whisper, whisper_cpp, parakeet)
     _add_column(conn, "engine", "TEXT")
+    # Words the AI correction pass swapped, JSON [[heard, fixed], ...]
+    _add_column(conn, "ai_fixes", "TEXT")
+    # Which AI pass handled the dictation: 'checked' (autocorrect ran) or
+    # 'polished' (Polish hotkey). NULL = no AI pass.
+    _add_column(conn, "ai_pass", "TEXT")
     # Backfill any pre-existing NULL kinds (shouldn't happen given the DEFAULT,
     # but harmless and explicit).
     conn.execute(
@@ -263,6 +269,8 @@ def save(
     app_name: str | None = None,
     window_title: str | None = None,
     is_research_topic: bool = False,
+    ai_fixes: list | None = None,
+    ai_pass: str | None = None,
 ) -> int | None:
     """Save an entry to history. Thread-safe via write lock.
 
@@ -299,8 +307,8 @@ def save(
                 "INSERT INTO transcriptions "
                 "(timestamp, raw_text, formatted_text, duration_seconds, "
                 " persona, model, word_count, kind, app_name, window_title, "
-                " is_research_topic, engine) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " is_research_topic, engine, ai_fixes, ai_pass) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now().isoformat(timespec="seconds"),
                     raw_text,
@@ -314,6 +322,8 @@ def save(
                     window_title,
                     1 if is_research_topic else 0,
                     ENGINE,
+                    json.dumps(ai_fixes) if ai_fixes else None,
+                    ai_pass,
                 ),
             )
             _conn.commit()

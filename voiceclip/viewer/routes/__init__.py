@@ -92,6 +92,7 @@ def load_all() -> None:
         patterns,
         research,
         settings,
+        stats,
         summaries,
         vocab,
     )

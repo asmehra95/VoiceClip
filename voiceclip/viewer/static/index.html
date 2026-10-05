@@ -31,6 +31,7 @@
     <button class="tab" data-view="patterns">📊 Patterns</button>
     <button class="tab" data-view="agent">🗣️ Agent</button>
     <button class="tab" data-view="vocab">🔤 Vocabulary</button>
+    <button class="tab" data-view="stats">🏆 Stats</button>
     <button class="tab" data-view="settings">⚙️ Settings</button>
   </div>
 
@@ -124,6 +125,13 @@
       <span class="vocab-scanned" id="vocab_scanned"></span>
     </div>
     <div class="vocab-suggestions" id="vocab_suggestions"></div>
+  </div>
+  <div id="stats_view" style="display:none">
+    <div class="dayline">
+      <h2>Your stats</h2>
+      <div class="stats" id="stats_streak"></div>
+    </div>
+    <section id="stats_slot"></section>
   </div>
   <div id="settings_view" style="display:none">
     <div class="dayline">

@@ -520,14 +520,18 @@ class HotkeyHandler:
 
         if self._profile == "polished":
             # Run through LLM for cleanup before pasting.
-            from voiceclip.polisher import polish
-            polished = polish(text)
+            from voiceclip import polisher as _pol
+            polished = _pol.polish(text)
+            polish_fixes = _pol.word_changes(text, polished) or None
+            polish_pass = "polished" if _pol.last_status == "ok" else None
             if HISTORY_ENABLED:
                 from voiceclip.history import save as save_history
                 save_history(
                     raw_text, polished, elapsed,
                     kind="transcription",
                     app_name=app_name,
+                    ai_fixes=polish_fixes,
+                    ai_pass=polish_pass,
                 )
             copy_paste_and_restore(polished)
             beep(self._done_sound)
@@ -536,13 +540,28 @@ class HotkeyHandler:
             log.info('Text: "%s"', preview)
             return
 
-        # Default: transcription profile — paste raw formatted text.
+        # Default: transcription profile — paste formatted text, optionally
+        # AI-corrected for mis-heard names/jargon (raw stays in history).
+        from voiceclip import config as _cfg
+        ai_fixes = ai_pass = None
+        if getattr(_cfg, "AUTOCORRECT", False):
+            from voiceclip import polisher as _pol
+            from voiceclip.polisher import correct, word_changes
+            corrected = correct(text)
+            if _pol.last_status == "ok":
+                ai_pass = "checked"
+            if corrected != text:
+                ai_fixes = word_changes(text, corrected) or None
+                log.info('Corrected: "%s" -> "%s"', text[:120], corrected[:120])
+            text = corrected
         if HISTORY_ENABLED:
             from voiceclip.history import save as save_history
             save_history(
                 raw_text, text, elapsed,
                 kind="transcription",
                 app_name=app_name,
+                ai_fixes=ai_fixes,
+                ai_pass=ai_pass,
             )
         copy_paste_and_restore(text)
         beep(self._done_sound)

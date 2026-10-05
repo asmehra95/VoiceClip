@@ -1006,3 +1006,79 @@ details.summary-details::after {
 .vocab-words li:hover .vocab-x,
 .vocab-words .vocab-x:focus-visible { opacity: 1; }
 @media (hover: none) { .vocab-words .vocab-x { opacity: .6; } }
+
+
+/* ---------- Stats tab --------------------------------------------------- */
+.stat-heroes { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.stat-hero {
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: 18px;
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+  animation: vc-rise .45s var(--bounce) both;
+}
+.stat-hero:nth-child(2) { animation-delay: .06s; }
+.stat-hero:nth-child(3) { animation-delay: .12s; }
+.stat-emoji { font-size: 22px; }
+.stat-value { font-size: 32px; font-weight: 800; letter-spacing: -.8px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.stat-label { font-size: 13px; font-weight: 700; color: var(--muted); }
+.stat-sub { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.stat-card {
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: 18px;
+  padding: 14px 18px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 12px;
+}
+.stat-row .stat-card { margin-bottom: 0; }
+.stat-card h3 { display: flex; align-items: center; justify-content: space-between; margin: 0 0 10px; font-size: 14px; font-weight: 800; }
+.stat-bars { display: flex; align-items: flex-end; gap: 4px; height: 120px; }
+.stat-bar-col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; }
+.stat-bar {
+  width: 100%;
+  height: max(3px, var(--h));
+  border-radius: 6px 6px 3px 3px;
+  background: linear-gradient(180deg, var(--accent), var(--mint));
+  transform-origin: bottom;
+  animation: vc-grow-y .6s var(--bounce) both;
+}
+.stat-bar.zero { background: var(--bar); }
+.stat-bar-day { font-size: 10.5px; color: var(--muted); font-weight: 700; }
+.stat-facts { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; margin: 0; font-size: 13.5px; }
+.stat-facts dt { color: var(--muted); }
+.stat-facts dd { margin: 0; font-weight: 800; text-align: right; font-variant-numeric: tabular-nums; }
+.stat-app { display: grid; grid-template-columns: minmax(80px, 1fr) 1.2fr auto; gap: 8px; align-items: center; font-size: 13px; margin: 6px 0; }
+.stat-app-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-app-bar { height: 8px; border-radius: 999px; background: var(--bar); overflow: hidden; }
+.stat-app-bar > span { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--pop), var(--sun)); }
+.stat-app-n { font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+.stat-fix { font-size: 14px; margin: 6px 0; }
+.stat-fix s { color: var(--muted); }
+.badge-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); grid-auto-rows: 1fr; gap: 8px; }
+.badge {
+  position: relative;
+  padding: 12px 10px 10px;
+  border-radius: 14px;
+  border: 1.5px dashed var(--border);
+  text-align: center;
+  filter: grayscale(1);
+  opacity: .6;
+}
+.badge.earned {
+  filter: none;
+  opacity: 1;
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--sun) 55%, var(--border));
+  background: linear-gradient(160deg, color-mix(in srgb, var(--sun) 14%, var(--surface)), var(--surface));
+}
+.badge.earned .badge-emoji { animation: vc-pop .4s var(--bounce) both; }
+.badge-emoji { font-size: 26px; }
+.badge-title { font-size: 12.5px; font-weight: 800; margin-top: 2px; }
+.badge-desc { font-size: 11px; color: var(--muted); line-height: 1.3; }
+.badge-progress { height: 4px; margin-top: 8px; border-radius: 999px; background: var(--bar); overflow: hidden; }
+.badge-progress > span { display: block; height: 100%; background: var(--muted); }
+.stat-note { font-size: 12px; color: var(--muted); text-align: center; margin: 4px 0 24px; }
+@keyframes vc-grow-y { from { transform: scaleY(0); } to { transform: scaleY(1); } }
