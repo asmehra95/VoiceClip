@@ -231,6 +231,9 @@ REFLECTION_MAX_DAYS = 0  # 0 = never auto-delete reflections
 # Off unless POLISH_HOTKEY is set in config or env.
 POLISH_HOTKEY: str | None = None
 POLISH_HOTKEY_MODE = "hold"
+# Run every dictation through the AI model to fix mis-hearings of names,
+# jargon and acronyms (voiceclip.polisher.correct). Off by default.
+AUTOCORRECT = False
 POLISH_PROMPT = (
     "Clean up this dictated text. Fix grammar, remove filler words (um, uh, like), "
     "add proper punctuation, and structure into clear sentences or paragraphs. "
@@ -383,7 +386,7 @@ def load():
     global CUSTOM_VOCABULARY
     global HOTKEY, HOTKEY_MODE, HISTORY_ENABLED, HISTORY_MAX_DAYS, _raw
     global REFLECTION_HOTKEY, REFLECTION_HOTKEY_MODE, REFLECTION_MAX_DAYS
-    global POLISH_HOTKEY, POLISH_HOTKEY_MODE, POLISH_PROMPT
+    global POLISH_HOTKEY, POLISH_HOTKEY_MODE, POLISH_PROMPT, AUTOCORRECT
     global SUMMARIES_PROVIDER, SUMMARIES_LOCAL_MODEL
     global SUMMARIES_OPENAI_MODEL, SUMMARIES_ANTHROPIC_MODEL
     global SUMMARIES_CLOUD_MODEL, SUMMARIES_STYLE
@@ -541,6 +544,8 @@ def load():
     )
     if POLISH_HOTKEY is not None and not str(POLISH_HOTKEY).strip():
         POLISH_HOTKEY = None
+    AUTOCORRECT = str(os.environ.get(
+        "VOICECLIP_AUTOCORRECT", cfg.get("autocorrect", False))).lower() == "true"
     POLISH_HOTKEY_MODE = os.environ.get(
         "VOICECLIP_POLISH_HOTKEY_MODE",
         cfg.get("polish_hotkey_mode", "hold"),

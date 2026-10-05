@@ -197,6 +197,12 @@ _SETTINGS_SCHEMA: dict[str, dict] = {
         "type": "ai_model",
         "cloud_providers": ["openai", "anthropic"],
     },
+    "autocorrect": {
+        "group": "AI",
+        "type": "bool",
+        "restart_required": True,
+        "visible_when": {"ai.model": "!none"},
+    },
     "polish_prompt": {
         "group": "AI",
         "type": "text",
@@ -415,6 +421,7 @@ def _runtime_value(key: str):
         "patterns.window_days": config.PATTERNS_WINDOW_DAYS,
         "custom_vocabulary": list(config.CUSTOM_VOCABULARY),
         "ai.model": _current_ai_model(),
+        "autocorrect": config.AUTOCORRECT,
     }
     return mapping.get(key)
 

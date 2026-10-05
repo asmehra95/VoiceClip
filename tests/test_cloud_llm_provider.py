@@ -150,7 +150,8 @@ class TestFeatureDispatch:
         monkeypatch.setattr(config, "SUMMARIES_CLOUD_MODEL", "assistant")
         spy_result = polisher.polish("raw dictation")
         assert spy and spy[0]["model_id"] == "assistant"
-        assert spy_result == '{"themes": []}'
+        # Output nothing like the input is rejected by the similarity guard.
+        assert spy_result == "raw dictation"
 
     def test_summarizer_run(self, spy):
         from voiceclip import summarizer
